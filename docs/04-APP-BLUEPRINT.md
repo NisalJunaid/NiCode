@@ -23,6 +23,7 @@
   - Site details: open the site, enable HTTPS, view the nginx config, remove (niCode-created sites only).
   - **Add a domain wizard**: domain (live DNS check with the exact A records to add), then an existing project or new folder, then how to serve it (auto-detected: static / web app / PHP with version / app on a port), then HTTPS, then a live step checklist.
   - Projects show their live domains in the project list.
+- **Claude accounts** (Server → Claude): several Claude subscriptions per server. Tap one to switch; long-press to rename or log out; add another with a name. Chats show **Switch account** when Claude reports a usage limit.
 - **Live preview** (eye icon in a project, Run tab, app cards, site detail): choose Dev server (start/stop, live output), Running app or Domain, then an in-app browser with back/forward/reload, phone ↔ desktop width, and open in the system browser.
 - **Logs** (Server → Logs, or a project's Run tab): grouped sources; the viewer has filter, Live follow, wrap, error/warning colouring, and long-press lines → **Ask Claude**, which opens the project chat with the lines pre-filled.
 - **Images in chat**: attach up to 4 photos or screenshots (camera or library), resized on the phone before sending.

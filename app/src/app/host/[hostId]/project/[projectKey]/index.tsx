@@ -163,6 +163,14 @@ export default function ChatScreen() {
   );
 }
 
+/** Claude's messages when a subscription runs out (usage / rate limits). */
+const LIMIT_RE = /usage limit|rate limit|limit reached|limit will reset|out of (extra )?usage/i;
+
+function SwitchAccountButton() {
+  const { hostId } = useProject();
+  return <Button small kind="secondary" title="Switch account" icon="swap-horizontal" onPress={() => router.push({ pathname: '/host/[hostId]/claude-accounts', params: { hostId } })} />;
+}
+
 function ChatRow({ item, sessionId, pending }: { item: ChatItem; sessionId: string | null | undefined; pending: boolean }) {
   const c = useColors();
   switch (item.kind) {
@@ -211,6 +219,7 @@ function ChatRow({ item, sessionId, pending }: { item: ChatItem; sessionId: stri
               {item.text}
             </T>
           ) : null}
+          {!item.ok && item.text && LIMIT_RE.test(item.text) ? <SwitchAccountButton /> : null}
         </View>
       );
     case 'notice':
@@ -220,6 +229,7 @@ function ChatRow({ item, sessionId, pending }: { item: ChatItem; sessionId: stri
           <T size="xs" tone={item.tone === 'danger' ? 'danger' : 'dim'} style={{ flex: 1 }}>
             {item.text}
           </T>
+          {LIMIT_RE.test(item.text) ? <SwitchAccountButton /> : null}
         </View>
       );
     case 'init':

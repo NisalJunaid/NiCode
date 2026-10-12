@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { app } from '../app.js';
-import { setEnvVar } from '../config.js';
+import { addAccount, listAccounts, logoutAccount, renameAccount, switchAccount } from '../claude/accounts.js';
 import { events } from '../events.js';
 import { log, maskSecrets } from '../log.js';
 import { NoParams, register, RpcError } from '../rpc.js';
 import { run, runOk } from '../util/exec.js';
 import { PtyCapture } from '../util/ptyCapture.js';
+import { restartClaudeProcesses } from './claude.js';
 import { githubLoggedIn } from './server.js';
 
 const TOKEN_RE = /sk-ant-oat[0-9A-Za-z_-]+/;
@@ -14,10 +15,18 @@ const TOKEN_RE = /sk-ant-oat[0-9A-Za-z_-]+/;
 let claudeLogin: { id: string; pty: PtyCapture } | null = null;
 const githubLogins = new Map<string, PtyCapture>();
 
-/** Saves the token, proves it works with a one-shot prompt, then flips the server to "ready". */
-async function saveAndVerifyClaudeToken(token: string): Promise<void> {
+/** After the logged-in account changed: new turns use it, and the server state follows. */
+async function loginChanged(): Promise<void> {
+  restartClaudeProcesses();
+  const status = await app.status.setState(app.claudeLoggedIn() ? 'ready' : 'needs_claude_login');
+  events.emit('setup.progress', status);
+}
+
+/** Proves the token works with a one-shot prompt, saves it as an account, and (by default) switches to it. */
+async function saveAndVerifyClaudeToken(token: string, label?: string, activate = true): Promise<string> {
   const env = { ...app.claudeEnv(), CLAUDE_CODE_OAUTH_TOKEN: token };
-  const r = await run(app.config.claudeBin, ['-p', 'Reply with just the word OK', '--output-format', 'json'], {
+  // Tests: skip the real one-shot prompt (no Claude CLI on CI machines).
+  const r = process.env.NICODE_TEST_CLAUDE_VERIFY === '1' ? { code: 0, stdout: 'OK', stderr: '' } : await run(app.config.claudeBin, ['-p', 'Reply with just the word OK', '--output-format', 'json'], {
     env,
     cwd: app.home,
     timeoutMs: 90_000,
@@ -26,11 +35,13 @@ async function saveAndVerifyClaudeToken(token: string): Promise<void> {
   if (!ok) {
     throw new RpcError('bad_request', 'Claude rejected this login. Try again.', { output: maskSecrets((r.stderr || r.stdout).slice(-500)) });
   }
-  await setEnvVar(app.config.envFile, 'CLAUDE_CODE_OAUTH_TOKEN', token);
-  const status = await app.status.setState('ready');
-  events.emit('setup.progress', status);
+  const { id } = await addAccount(token, label, activate);
+  await loginChanged();
   log.info('claude login saved and verified');
+  return id;
 }
+
+const Label = z.string().trim().min(1).max(40).optional();
 
 export function registerSetupModule(): void {
   register('setup.status', NoParams, () => app.status.read());
@@ -50,7 +61,7 @@ export function registerSetupModule(): void {
     return { loginId: id, url: m[0] };
   });
 
-  register('setup.claudeLogin.submit', z.object({ loginId: z.string(), code: z.string().min(4).max(4096) }), async ({ loginId, code }) => {
+  register('setup.claudeLogin.submit', z.object({ loginId: z.string(), code: z.string().min(4).max(4096), label: Label, activate: z.boolean().optional() }), async ({ loginId, code, label, activate }) => {
     if (!claudeLogin || claudeLogin.id !== loginId) throw new RpcError('not_found', 'Login expired; start again');
     const p = claudeLogin.pty;
     p.write(code.trim() + '\r');
@@ -58,13 +69,26 @@ export function registerSetupModule(): void {
     p.kill();
     claudeLogin = null;
     if (!m) throw new RpcError('bad_request', 'Claude did not accept the code', { output: maskSecrets(p.output.slice(-500)) });
-    await saveAndVerifyClaudeToken(m[0]);
-    return { ok: true as const };
+    return { ok: true as const, accountId: await saveAndVerifyClaudeToken(m[0], label, activate) };
   });
 
-  register('setup.claudeLogin.setToken', z.object({ token: z.string().regex(/^sk-ant-[A-Za-z0-9_-]+$/) }), async ({ token }) => {
-    await saveAndVerifyClaudeToken(token);
-    return { ok: true as const };
+  register('setup.claudeLogin.setToken', z.object({ token: z.string().regex(/^sk-ant-[A-Za-z0-9_-]+$/), label: Label, activate: z.boolean().optional() }), async ({ token, label, activate }) => ({
+    ok: true as const,
+    accountId: await saveAndVerifyClaudeToken(token, label, activate),
+  }));
+
+  // Several Claude subscriptions per server: list, switch, rename, log out (tokens stay here).
+  register('setup.claudeAccounts.list', NoParams, async () => ({ accounts: await listAccounts() }));
+  register('setup.claudeAccounts.switch', z.object({ id: z.string().max(64) }), async ({ id }) => {
+    const accounts = await switchAccount(id);
+    await loginChanged();
+    return { accounts };
+  });
+  register('setup.claudeAccounts.rename', z.object({ id: z.string().max(64), label: z.string().trim().min(1).max(40) }), async ({ id, label }) => ({ accounts: await renameAccount(id, label) }));
+  register('setup.claudeAccounts.logout', z.object({ id: z.string().max(64) }), async ({ id }) => {
+    const r = await logoutAccount(id);
+    await loginChanged();
+    return r;
   });
 
   register('setup.github.start', NoParams, async () => {

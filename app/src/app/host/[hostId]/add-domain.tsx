@@ -3,6 +3,7 @@ import { router, Stack, useLocalSearchParams } from 'expo-router';
 import * as WebBrowser from 'expo-web-browser';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Switch, View } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import type { DnsCheck, Project, Site, SiteKind, SitesStatus, SiteSuggestion } from '@protocol';
 import { SiteProgress, useSiteProgress } from '@/components/SiteProgress';
 import { Banner, Button, Card, EmptyState, Field, Icon, Loading, Segmented, T } from '@/components/ui';
@@ -188,7 +189,7 @@ export default function AddDomain() {
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <ScrollView style={{ flex: 1, backgroundColor: c.bg }} contentContainerStyle={{ padding: space.lg, gap: space.lg, paddingBottom: 48 }} keyboardShouldPersistTaps="handled">
+      <KeyboardAwareScrollView bottomOffset={24} style={{ flex: 1, backgroundColor: c.bg }} contentContainerStyle={{ padding: space.lg, gap: space.lg, paddingBottom: 48 }} keyboardShouldPersistTaps="handled">
         <Stack.Screen options={{ title: 'Add a domain' }} />
 
         {/* 1. Domain */}
@@ -273,7 +274,7 @@ export default function AddDomain() {
         <T size="xs" tone="faint" style={{ textAlign: 'center' }}>
           niCode tests the nginx config before reloading and undoes the change if nginx rejects it.
         </T>
-      </ScrollView>
+      </KeyboardAwareScrollView>
     </KeyboardAvoidingView>
   );
 }

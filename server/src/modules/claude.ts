@@ -18,6 +18,11 @@ const Images = z
   .optional();
 
 const sessions = new Map<string, ClaudeSession>();
+
+/** Called when the active Claude account changes. */
+export function restartClaudeProcesses(): void {
+  for (const s of sessions.values()) s.restartForNewLogin();
+}
 let store: SessionStore;
 let broker: PermissionBroker;
 const lastResultPush = new Map<string, number>();

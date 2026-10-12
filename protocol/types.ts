@@ -218,8 +218,12 @@ export interface Methods {
   // Setup (allowed while Claude is not yet logged in)
   'setup.status': [Record<string, never>, SetupStatus];
   'setup.claudeLogin.start': [Record<string, never>, { loginId: string; url: string }];
-  'setup.claudeLogin.submit': [{ loginId: string; code: string }, { ok: true }];
-  'setup.claudeLogin.setToken': [{ token: string }, { ok: true }];   // manual fallback
+  'setup.claudeLogin.submit': [{ loginId: string; code: string; label?: string; activate?: boolean }, { ok: true; accountId: string }];
+  'setup.claudeLogin.setToken': [{ token: string; label?: string; activate?: boolean }, { ok: true; accountId: string }]; // manual fallback
+  'setup.claudeAccounts.list': [Record<string, never>, { accounts: ClaudeAccount[] }];
+  'setup.claudeAccounts.switch': [{ id: string }, { accounts: ClaudeAccount[] }];
+  'setup.claudeAccounts.rename': [{ id: string; label: string }, { accounts: ClaudeAccount[] }];
+  'setup.claudeAccounts.logout': [{ id: string }, { accounts: ClaudeAccount[]; switchedTo: string | null }];
   'setup.github.start': [Record<string, never>, { loginId: string; userCode: string; verificationUrl: string }];
   'setup.github.poll': [{ loginId: string }, { state: 'pending' | 'done' | 'failed'; login?: string; error?: string }];
   'auth.devices': [Record<string, never>, (DeviceInfo & { current: boolean })[]];
@@ -436,6 +440,19 @@ export interface ProjectTask {
   /** The exact command that will run. */
   command: string;
   group: 'install' | 'build' | 'script' | 'php' | 'git';
+}
+
+/** A Claude subscription login on the server. The token itself never leaves the server. */
+export interface ClaudeAccount {
+  id: string;
+  label: string;
+  /** token = added through niCode (setup-token); cli = `claude /login` on the server itself. */
+  kind: 'token' | 'cli';
+  active: boolean;
+  addedAt: string | null;
+  lastUsedAt: string | null;
+  /** Last 4 characters of the token, to tell accounts apart. */
+  hint: string | null;
 }
 
 /** Which notifications a phone wants (all on by default). */

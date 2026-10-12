@@ -1,5 +1,5 @@
 import * as Haptics from 'expo-haptics';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { Alert, View } from 'react-native';
 import type { DeviceInfo } from '@protocol';
@@ -18,11 +18,21 @@ export default function ServerSettings() {
   const removeHost = useHosts((s) => s.remove);
   const { client, state, info, error } = useConnection(hostId);
   const [devices, setDevices] = useState<Dev[] | null>(null);
+  const [claudeAccount, setClaudeAccount] = useState<string | null>(null);
 
   const loadDevices = useCallback(() => {
     client?.call('auth.devices', {}).then(setDevices).catch(() => undefined);
+    client
+      ?.call('setup.claudeAccounts.list', {})
+      .then((r) => setClaudeAccount(r.accounts.find((a) => a.active)?.label ?? null))
+      .catch(() => undefined);
   }, [client]);
   useOnConnected(client, loadDevices);
+  useFocusEffect(
+    useCallback(() => {
+      if (client?.state === 'open') loadDevices();
+    }, [client, loadDevices]),
+  );
 
   const deviceActions = (d: Dev) => {
     Alert.alert(d.name, d.kind === 'key' ? 'Phone' : `Browser token${d.expiresAt ? `, expires ${relativeTime(d.expiresAt)}` : ''}`, [
@@ -93,9 +103,13 @@ export default function ServerSettings() {
           <Row
             title="Claude"
             icon="sparkles-outline"
-            subtitle={info ? (info.setup.claude ? 'Logged in with your subscription' : 'Not logged in') : '—'}
+            subtitle={info ? (info.setup.claude ? `Using ${claudeAccount ?? 'your subscription'} · switch, add or log out` : 'Not logged in') : '—'}
             right={info ? <Badge text={info.setup.claude ? 'Ready' : 'Log in'} tone={info.setup.claude ? 'success' : 'warning'} /> : null}
-            onPress={info && !info.setup.claude ? () => router.push({ pathname: '/host/[hostId]/claude-login', params: { hostId } }) : undefined}
+            onPress={
+              info
+                ? () => router.push({ pathname: info.setup.claude ? '/host/[hostId]/claude-accounts' : '/host/[hostId]/claude-login', params: { hostId } })
+                : undefined
+            }
           />
           <Divider />
           <Row

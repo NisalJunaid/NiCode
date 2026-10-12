@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, Pressable, StyleSheet, View } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { DB_LABEL, type Db, EXTRA_LABEL, type Extra, STACKS, type Stack, type StarterChoice } from '@/lib/starters';
 import { radius, space, useColors } from '@/theme';
 import { Banner, Button, Field, Icon, Segmented, T } from './ui';
@@ -27,7 +28,7 @@ export function StarterForm({ busy, claudeReady, onCreate }: { busy: boolean; cl
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <ScrollView contentContainerStyle={{ paddingHorizontal: space.lg, paddingBottom: space.xxl, gap: space.lg }} keyboardShouldPersistTaps="handled">
+      <KeyboardAwareScrollView bottomOffset={24} contentContainerStyle={{ paddingHorizontal: space.lg, paddingBottom: space.xxl, gap: space.lg }} keyboardShouldPersistTaps="handled">
         <Field
           label="Project name"
           placeholder="my-new-app"
@@ -129,7 +130,7 @@ export function StarterForm({ busy, claudeReady, onCreate }: { busy: boolean; cl
           disabled={!valid}
           onPress={() => onCreate({ name, stack, language, db, extras, notes })}
         />
-      </ScrollView>
+      </KeyboardAwareScrollView>
     </KeyboardAvoidingView>
   );
 }

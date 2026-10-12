@@ -119,6 +119,17 @@ export function readEnvFile(path: string): Record<string, string> {
   return out;
 }
 
+export async function removeEnvVar(path: string, key: string): Promise<void> {
+  let lines: string[] = [];
+  try {
+    lines = (await readFile(path, 'utf8')).split('\n').filter((l) => l !== '');
+  } catch {
+    return;
+  }
+  await writeFileAtomic(path, lines.filter((l) => !l.startsWith(`${key}=`)).join('\n') + '\n');
+  delete process.env[key];
+}
+
 export async function setEnvVar(path: string, key: string, value: string): Promise<void> {
   let lines: string[] = [];
   try {

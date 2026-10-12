@@ -221,6 +221,12 @@ export class ClaudeSession {
     else this.stopProcess();
   }
 
+  /** After a Claude account switch: the next turn starts a fresh CLI process with the new login. */
+  restartForNewLogin(): void {
+    if (this.busy) this.respawnAfterTurn = true;
+    else this.stopProcess();
+  }
+
   shutdown(): void {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.proc?.kill('SIGINT');

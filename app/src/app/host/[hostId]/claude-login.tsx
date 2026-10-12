@@ -15,7 +15,9 @@ import { space, useColors } from '@/theme';
  */
 export default function ClaudeLogin() {
   const c = useColors();
-  const { hostId } = useLocalSearchParams<{ hostId: string }>();
+  const { hostId, add } = useLocalSearchParams<{ hostId: string; add?: string }>();
+  const adding = add === '1';
+  const [label, setLabel] = useState('');
   const { client } = useConnection(hostId);
   const [loginId, setLoginId] = useState<string | null>(null);
   const [code, setCode] = useState('');
@@ -59,8 +61,13 @@ export default function ClaudeLogin() {
   if (step === 'done') {
     return (
       <Screen>
-        <Banner tone="success" icon="checkmark-circle" title="Claude is ready" body="Your subscription is connected on this server." />
-        <Button title="Start coding" onPress={() => router.back()} />
+        <Banner
+          tone="success"
+          icon="checkmark-circle"
+          title={adding ? `${label.trim() || 'New account'} is in use` : 'Claude is ready'}
+          body={adding ? 'Chats continue with this account from their next message. Switch back any time under Claude accounts.' : 'Your subscription is connected on this server.'}
+        />
+        <Button title={adding ? 'Done' : 'Start coding'} onPress={() => router.back()} />
       </Screen>
     );
   }
@@ -68,7 +75,20 @@ export default function ClaudeLogin() {
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <Screen scroll>
-        <T tone="dim">This connects your Claude Pro or Max subscription to the server. You only do it once.</T>
+        <T tone="dim">
+          {adding
+            ? 'Log in with another Claude Pro or Max subscription. You can switch between your accounts any time.'
+            : 'This connects your Claude Pro or Max subscription to the server. You only do it once.'}
+        </T>
+        <Field label="Name for this account (optional)" placeholder="Personal, Work…" value={label} onChangeText={setLabel} maxLength={40} />
+        {adding ? (
+          <Banner
+            tone="accent"
+            icon="information-circle-outline"
+            title="Use the right Claude account"
+            body="If your browser is already signed in to claude.ai with a different account, sign out there (or switch accounts) before approving."
+          />
+        ) : null}
         <Card>
           <StepTitle n={1} title="Open the Claude login page" done={step !== 'start'} />
           <T size="sm" tone="dim">
@@ -88,7 +108,7 @@ export default function ClaudeLogin() {
             title={busy && step === 'code' ? 'Checking with Claude…' : 'Finish login'}
             loading={busy && step === 'code'}
             disabled={step !== 'code' || code.trim().length < 4}
-            onPress={() => finish(() => client!.call('setup.claudeLogin.submit', { loginId: loginId!, code: code.trim() }, 120_000))}
+            onPress={() => finish(() => client!.call('setup.claudeLogin.submit', { loginId: loginId!, code: code.trim(), ...(label.trim() ? { label: label.trim() } : {}) }, 120_000))}
           />
         </Card>
         {error ? <Banner tone="danger" icon="alert-circle-outline" title="Login didn't work" body={error} /> : null}
@@ -100,7 +120,7 @@ export default function ClaudeLogin() {
               On any computer with Claude Code, run <T size="sm" mono>claude setup-token</T> and paste the token it prints (starts with sk-ant-oat).
             </T>
             <Field placeholder="sk-ant-oat…" value={token} onChangeText={setToken} autoCapitalize="none" autoCorrect={false} secureTextEntry />
-            <Button title="Use this token" kind="secondary" loading={busy} disabled={!token.startsWith('sk-ant-')} onPress={() => finish(() => client!.call('setup.claudeLogin.setToken', { token: token.trim() }, 120_000))} />
+            <Button title="Use this token" kind="secondary" loading={busy} disabled={!token.startsWith('sk-ant-')} onPress={() => finish(() => client!.call('setup.claudeLogin.setToken', { token: token.trim(), ...(label.trim() ? { label: label.trim() } : {}) }, 120_000))} />
           </Card>
         ) : (
           <Button title="Having trouble? Paste a token instead" kind="ghost" onPress={() => setManual(true)} />

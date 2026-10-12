@@ -2,6 +2,7 @@ import * as Haptics from 'expo-haptics';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Switch, TextInput, View } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import type { AppProcess, AppStartOptions } from '@protocol';
 import { OutputBox, StepList, useTaskStream } from '@/components/TaskConsole';
 import { Banner, Button, Field, Icon, IconButton, Loading, Segmented, T } from '@/components/ui';
@@ -130,7 +131,7 @@ export default function AppSetup() {
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <ScrollView style={{ flex: 1, backgroundColor: c.bg }} contentContainerStyle={{ padding: space.lg, gap: space.lg, paddingBottom: 48 }} keyboardShouldPersistTaps="handled">
+      <KeyboardAwareScrollView bottomOffset={24} style={{ flex: 1, backgroundColor: c.bg }} contentContainerStyle={{ padding: space.lg, gap: space.lg, paddingBottom: 48 }} keyboardShouldPersistTaps="handled">
         <Stack.Screen options={{ title: `Run ${basename(project)}` }} />
         <View style={[styles.suggest, { backgroundColor: c.accentSoft }]}>
           <Icon name="sparkles-outline" size={16} color={c.accent} />
@@ -226,7 +227,7 @@ export default function AppSetup() {
         <T size="xs" tone="faint" style={{ textAlign: 'center' }}>
           Runs with pm2: restarted automatically if it crashes, and after server reboots once start-on-boot is on.
         </T>
-      </ScrollView>
+      </KeyboardAwareScrollView>
     </KeyboardAvoidingView>
   );
 }

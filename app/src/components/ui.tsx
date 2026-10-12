@@ -9,7 +9,6 @@ import {
   ActivityIndicator,
   type ColorValue,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -18,6 +17,7 @@ import {
   type ViewStyle,
   View,
 } from 'react-native';
+import { KeyboardAwareScrollView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { HIT, font, radius, space, useColors } from '@/theme';
 import { LogoLoader } from './Logo';
@@ -58,9 +58,15 @@ export function Screen({ children, scroll, padded = true, style }: { children: R
   const inner = [{ padding: padded ? space.lg : 0, gap: space.lg }, style];
   if (scroll) {
     return (
-      <ScrollView style={{ flex: 1, backgroundColor: c.bg }} contentContainerStyle={[...inner, { paddingBottom: insets.bottom + space.xl }]} keyboardShouldPersistTaps="handled">
+      // Keeps the focused field above the keyboard (Android edge-to-edge doesn't resize the window).
+      <KeyboardAwareScrollView
+        bottomOffset={24}
+        style={{ flex: 1, backgroundColor: c.bg }}
+        contentContainerStyle={[...inner, { paddingBottom: insets.bottom + space.xl }]}
+        keyboardShouldPersistTaps="handled"
+      >
         {children}
-      </ScrollView>
+      </KeyboardAwareScrollView>
     );
   }
   return <View style={[{ flex: 1, backgroundColor: c.bg }, ...inner]}>{children}</View>;

@@ -42,6 +42,7 @@ export default function RootLayout() {
             <Stack.Screen name="host/[hostId]/index" options={{ title: '' }} />
             <Stack.Screen name="host/[hostId]/server" options={{ title: 'Server' }} />
             <Stack.Screen name="host/[hostId]/claude-login" options={{ title: 'Log in to Claude' }} />
+            <Stack.Screen name="host/[hostId]/claude-accounts" options={{ title: 'Claude accounts' }} />
             <Stack.Screen name="host/[hostId]/github-login" options={{ title: 'Connect GitHub' }} />
             <Stack.Screen name="host/[hostId]/project/[projectKey]" options={{ title: '' }} />
             <Stack.Screen name="host/[hostId]/file" options={{ title: '' }} />

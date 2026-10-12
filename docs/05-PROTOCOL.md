@@ -90,6 +90,12 @@ While `SetupStatus.state` is `needs_claude_login`, only these methods are allowe
 - **`term.close`**: `kill: true` kills the tmux session; otherwise it only detaches.
 - **`claude.start`**: creates a session, spawns the CLI, sends `prompt` as the first turn, and resolves immediately with the summary (`state: "running"`). The output streams as `claude.event`.
 - **`claude.send`**: `busy` while a turn is running; the app should queue the message or offer Stop. If the CLI process exited (idle timeout or crash), the daemon respawns it with `--resume`.
+- **Claude accounts** (`setup.claudeAccounts.*`, also allowed before Claude is logged in):
+  - Each `claude setup-token` login is kept on the server as a named account in `<dataDir>/claude-accounts.json` (mode 600). The active one is mirrored into the env file as `CLAUDE_CODE_OAUTH_TOKEN`.
+  - Tokens never leave the server: `ClaudeAccount` has id, label, kind (`token`, or `cli` for a `claude /login` made on the server), active, dates, and the token's last 4 characters.
+  - `setup.claudeLogin.submit` and `setup.claudeLogin.setToken` take an optional `label` and `activate` (default true) and return `accountId`. A token that was already in the env file is adopted as "Account 1".
+  - `list`, `switch {id}`, `rename {id, label}`, `logout {id}`. Logging out of the active account switches to the most recently used other one; with none left, the server returns to `needs_claude_login`.
+  - After a switch or logout, idle Claude processes stop, and busy ones restart after their current turn. Every chat continues with the new account from its next message (`--resume`).
 - **Images**: `claude.start` and `claude.send` accept `images: ImageInput[]` (up to 4; jpeg/png/webp/gif; ≤ 5 MB each as base64 without a `data:` prefix). They reach Claude as image blocks before the text. History keeps only `imageCount` on the `user_turn` marker, never the image data. The app resizes images to ≤ 1568 px JPEG before sending.
 - **`claude.interrupt`**: sends SIGINT. The session goes to `idle` once the process settles.
 - **`claude.setMode`**: takes effect on the next turn (the daemon respawns with `--resume` and the new flags if needed).
