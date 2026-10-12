@@ -151,6 +151,23 @@ Methods `apps.*` keep project apps running with pm2 as the daemon's user (`PM2_H
 - **`tasks.list {projectPath}`**: one-tap tasks found in the project: git pull, install (npm/pnpm/yarn/composer), package.json scripts (not dev/watch/serve/start or pre/post hooks), Laravel artisan commands.
 - **`tasks.run {projectPath, taskId, opId?}`**: runs a listed task **by id only** (the client never sends a command line) and returns `{code, output}`; output streams as `tasks.output {opId, chunk}`. Times out after 30 minutes.
 
+## Live preview
+Preview a project's **dev server**, a **running app** (any port), or a **linked domain** inside the app.
+- **Port previews** get their own address, `p<port>.<ip-dashed>.sslip.io`, so the page runs at the root of its own origin and absolute asset paths keep working.
+  - `preview.open {port, opId?}`, on first use per port: writes an nginx site (`nicode-preview-<port>.conf`; hidden from `sites.list`) that proxies to the daemon, reloads nginx, and gets a certificate. Progress comes as `tasks.step` (`check`, `site`, `https`).
+  - It returns a **one-time link** `…/__nicode/auth?t=<token>` (HMAC, 2 minutes, single use, bound to the port).
+- **The gate in the daemon:**
+  - Opening the link sets an `HttpOnly; Secure; SameSite=Lax` cookie valid for 12 h **for that preview host only**.
+  - Requests without it get 401. With it, requests and websocket upgrades (hot reload) are proxied to `127.0.0.1:<port>`, with `Host: localhost:<port>` and `X-Forwarded-Host`; the cookie is stripped before forwarding.
+  - The daemon's own port can't be previewed.
+- `preview.list` and `preview.close {port}` (removes the nginx site + certificate). `preview.status` → `{supported, reason?}`, which needs nginx + root/sudo like Sites.
+- **Dev servers:**
+  - `preview.devOptions {projectPath}` shows the command that will run: `dev` > `develop` > `start:dev` > `serve` > `start`, with framework port/host flags for Next, Nuxt, Astro, Angular and Vite; Laravel uses `php artisan serve`.
+  - `preview.devStart {projectPath, opId?}` runs it on a free port from 5170, bound to 127.0.0.1, and resolves once the port answers (max 2 min). Output streams as `tasks.output` with the dev server's `opId`.
+  - `preview.devStatus` → `{dev, output}`; `preview.devStop`.
+  - Limits: one per project, up to 3 at once. A dev server stops after 2 h without preview traffic, and when the daemon stops.
+- **Domain previews** are loaded by the app directly from `https://<domain>`.
+
 ## Reconnect
 1. Reconnect with backoff (0.5 s → 30 s max), and immediately when the app returns to the foreground.
 2. `server.info`.

@@ -8,7 +8,7 @@ import { appTone, uptime } from '@/lib/apps';
 import { basename, errorMessage, randomId } from '@/lib/util';
 import { radius, space, useColors } from '@/theme';
 import { StepList, useTaskStream } from './TaskConsole';
-import { Banner, Button, StatusDot, T } from './ui';
+import { Banner, Button, IconButton, StatusDot, T } from './ui';
 
 /** One pm2 app: status at a glance + the two actions you need most (restart, stop/start). */
 export function AppCard({ hostId, client, app, onChanged, showProject }: { hostId: string; client: NicodeClient; app: AppProcess; onChanged: () => void; showProject?: boolean }) {
@@ -76,6 +76,13 @@ export function AppCard({ hostId, client, app, onChanged, showProject }: { hostI
         ) : (
           <Button small title="Start" icon="play" loading={busy === 'start'} onPress={() => void act('start')} style={{ flex: 1 }} />
         )}
+        {online && app.port && app.projectPath ? (
+          <IconButton
+            icon="eye-outline"
+            label={`Preview ${app.name}`}
+            onPress={() => router.push({ pathname: '/host/[hostId]/preview', params: { hostId, project: app.projectPath!, source: 'app', port: String(app.port) } })}
+          />
+        ) : null}
         <Button small kind="ghost" title="Logs" icon="document-text-outline" onPress={() => router.push({ pathname: '/host/[hostId]/app', params: { hostId, name: app.name } })} />
       </View>
     </Pressable>

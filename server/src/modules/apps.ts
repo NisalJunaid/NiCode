@@ -5,16 +5,16 @@
  * - Apps get a clean environment (never the daemon's tokens) plus the user's variables.
  * - Tasks and builds run by id from a fixed catalog (no shell strings).
  */
-import net from 'node:net';
 import path from 'node:path';
 import { z } from 'zod';
-import type { AppProcess, AppsStatus, TaskStepState } from '../../../protocol/types.js';
+import type { AppProcess, AppsStatus } from '../../../protocol/types.js';
 import { app } from '../app.js';
 import { hasBuildScript, installTasks, listTasks, packageManager, splitCommand, startOptions } from '../apps/catalog.js';
-import { events } from '../events.js';
 import { log } from '../log.js';
 import { register, RpcError } from '../rpc.js';
 import { run } from '../util/exec.js';
+import { portListening, waitForPort } from '../util/net.js';
+import { Steps } from '../util/steps.js';
 import { priv } from '../util/priv.js';
 import { cleanEnv, runStreaming } from '../util/stream.js';
 import { projectOf } from './projects.js';
@@ -30,19 +30,6 @@ async function pm2(args: string[], timeoutMs = 60_000) {
 async function pm2Version(): Promise<string | null> {
   const r = await pm2(['--version'], 20_000);
   return r.code === 0 ? r.stdout.trim().split('\n').pop() ?? null : null;
-}
-
-function portListening(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const s = net.connect({ port, host: '127.0.0.1' });
-    const done = (ok: boolean) => {
-      s.destroy();
-      resolve(ok);
-    };
-    s.setTimeout(400, () => done(false));
-    s.once('connect', () => done(true));
-    s.once('error', () => done(false));
-  });
 }
 
 function projectFor(cwd: string, hinted?: string): string | null {
@@ -114,38 +101,6 @@ async function status(): Promise<AppsStatus> {
 }
 
 // ── step reporting ───────────────────────────────────────────────────────────
-
-class Steps {
-  readonly list: TaskStepState[] = [];
-  constructor(private readonly opId?: string) {}
-  set(step: string, label: string, status: TaskStepState['status'], detail?: string): void {
-    const s: TaskStepState = { step, label, status, ...(detail ? { detail } : {}) };
-    const i = this.list.findIndex((x) => x.step === step);
-    if (i >= 0) this.list[i] = s;
-    else this.list.push(s);
-    if (this.opId) events.emit('tasks.step', { opId: this.opId, ...s });
-  }
-  /** Runs one catalog/explicit command as a step; throws on failure. */
-  async exec(step: string, label: string, cwd: string, file: string, args: string[], env: NodeJS.ProcessEnv, timeoutMs = 15 * 60_000): Promise<void> {
-    this.set(step, label, 'running', [file, ...args].join(' '));
-    const r = await runStreaming(file, args, { cwd, env, opId: this.opId, timeoutMs });
-    if (r.code !== 0) {
-      const tail = r.output.trim().split('\n').slice(-4).join('\n');
-      this.set(step, label, 'failed', tail || `exit code ${r.code}`);
-      throw new RpcError('bad_request', `${label} failed`, { output: r.output.slice(-4000) });
-    }
-    this.set(step, label, 'done');
-  }
-}
-
-async function waitForPort(port: number, ms: number): Promise<boolean> {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    if (await portListening(port)) return true;
-    await new Promise((r) => setTimeout(r, 700));
-  }
-  return false;
-}
 
 async function installAndBuild(steps: Steps, dir: string): Promise<void> {
   const env = cleanEnv({ NODE_ENV: 'development' }); // dev deps are needed to build

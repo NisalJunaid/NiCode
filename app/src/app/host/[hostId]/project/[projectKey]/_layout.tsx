@@ -39,6 +39,11 @@ export default function ProjectLayout() {
           headerRight: () => (
             <View style={{ flexDirection: 'row' }}>
             <IconButton
+              icon="eye-outline"
+              label="Live preview"
+              onPress={() => router.push({ pathname: '/host/[hostId]/preview', params: { hostId, project: projectPath } })}
+            />
+            <IconButton
               icon="globe-outline"
               label="Domains for this project"
               onPress={() => router.push({ pathname: '/host/[hostId]/sites', params: { hostId, project: projectPath } })}

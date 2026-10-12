@@ -296,6 +296,15 @@ export interface Methods {
   'apps.startOptions': [{ projectPath: string }, AppStartOptions];
   'tasks.list': [{ projectPath: string }, ProjectTask[]];
   'tasks.run': [{ projectPath: string; taskId: string; opId?: string }, { code: number; output: string }];
+  // Live preview (see docs/05 "Live preview")
+  'preview.status': [Record<string, never>, PreviewStatus];
+  'preview.open': [{ port: number; opId?: string }, PreviewLink];
+  'preview.list': [Record<string, never>, PreviewSite[]];
+  'preview.close': [{ port: number }, { ok: true }];
+  'preview.devOptions': [{ projectPath: string }, DevOptions];
+  'preview.devStart': [{ projectPath: string; opId?: string }, DevServer];
+  'preview.devStop': [{ projectPath: string }, { ok: true }];
+  'preview.devStatus': [{ projectPath: string }, { dev: DevServer | null; output: string }];
 }
 
 // ── Websites & domains ───────────────────────────────────────────────────────
@@ -421,6 +430,46 @@ export interface ProjectTask {
   /** The exact command that will run. */
   command: string;
   group: 'install' | 'build' | 'script' | 'php' | 'git';
+}
+
+export interface PreviewStatus {
+  /** Previews of ports need nginx + root/sudo (like Sites). Domain previews always work. */
+  supported: boolean;
+  reason?: string;
+}
+
+/** A one-time sign-in link for a preview host; opening it sets a 12 h cookie for that host. */
+export interface PreviewLink {
+  url: string;
+  host: string;
+  port: number;
+  https: boolean;
+}
+
+export interface PreviewSite {
+  port: number;
+  host: string;
+  https: boolean;
+}
+
+export interface DevOptions {
+  available: boolean;
+  /** e.g. "npm run dev -- --port <port> --host 127.0.0.1" */
+  command: string | null;
+  framework: string | null;
+  reason?: string;
+}
+
+/** A temporary dev server (hot reload) the daemon runs for previews. Output: `tasks.output` with `opId`. */
+export interface DevServer {
+  projectPath: string;
+  port: number;
+  command: string;
+  framework: string | null;
+  state: 'starting' | 'running' | 'exited';
+  startedAt: string;
+  exitCode: number | null;
+  opId: string;
 }
 
 export interface TaskStepState {

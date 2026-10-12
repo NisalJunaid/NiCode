@@ -23,6 +23,7 @@ import {
 import { type Device, updateDevices } from './config.js';
 import { events } from './events.js';
 import { log } from './log.js';
+import { blockedPorts, handlePreviewRequest, handlePreviewUpgrade } from './preview/proxy.js';
 import { dispatch } from './rpc.js';
 
 const WS_SUBPROTOCOL_PREFIX = 'nicode.';
@@ -142,7 +143,9 @@ export function startHttpServer(): http.Server {
     handleProtocols: (protocols) => (protocols.has('nicode') ? 'nicode' : false),
   });
 
+  blockedPorts.add(app.config.port);
   const server = http.createServer((req, res) => {
+    if (handlePreviewRequest(req, res)) return; // p<port>.<ip>.sslip.io → the previewed app
     const route = `${req.method} ${req.url?.split('?')[0]}`;
     const ip = clientIp(req);
     if (route === 'GET /health') {
@@ -163,6 +166,7 @@ export function startHttpServer(): http.Server {
   });
 
   server.on('upgrade', (req, socket, head) => {
+    if (handlePreviewUpgrade(req, socket, head)) return;
     const ip = clientIp(req);
     if (req.url?.split('?')[0] !== '/ws') return reject(socket, 404, 'Not Found');
     if (backoff.blockedFor(ip) > 0) return reject(socket, 429, 'Too Many Requests');

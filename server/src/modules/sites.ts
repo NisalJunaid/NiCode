@@ -12,7 +12,7 @@ import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
-import type { Site, SiteStep, SitesStatus } from '../../../protocol/types.js';
+import type { PreviewSite, Site, SiteStep, SitesStatus } from '../../../protocol/types.js';
 import { app } from '../app.js';
 import { events } from '../events.js';
 import { log } from '../log.js';
@@ -22,6 +22,7 @@ import { detectSite } from '../sites/detect.js';
 import { isValidDomain, normalizeDomain, parseSite, phpVersionFromSocket, renderSite, siteFileName, sortVersionsDesc } from '../sites/nginx.js';
 import { run } from '../util/exec.js';
 import { priv } from '../util/priv.js';
+import type { Steps } from '../util/steps.js';
 import { projectOf } from './projects.js';
 
 const NGINX = process.env.NICODE_NGINX_DIR ?? '/etc/nginx';
@@ -59,7 +60,7 @@ async function nginxReload(): Promise<void> {
 // ── status / discovery ───────────────────────────────────────────────────────
 
 let ipCache: { at: number; ip: string | null } = { at: 0, ip: null };
-async function serverIp(): Promise<string | null> {
+export async function serverIp(): Promise<string | null> {
   const sslip = /^(\d+)-(\d+)-(\d+)-(\d+)\.sslip\.io$/.exec(app.config.publicHost);
   if (sslip) return sslip.slice(1).join('.');
   if (Date.now() - ipCache.at < 3600_000) return ipCache.ip;
@@ -85,7 +86,7 @@ async function phpVersions(): Promise<string[]> {
   return sortVersionsDesc(names.map(phpVersionFromSocket).filter((v): v is string => !!v));
 }
 
-async function status(): Promise<SitesStatus> {
+export async function status(): Promise<SitesStatus> {
   const [ip, php, nginxV, certbotV] = await Promise.all([
     serverIp(),
     phpVersions(),
@@ -158,7 +159,7 @@ async function enabledSet(): Promise<Set<string>> {
 }
 
 async function listSites(): Promise<Site[]> {
-  const names = await readdir(AVAILABLE).catch(() => [] as string[]);
+  const names = (await readdir(AVAILABLE).catch(() => [] as string[])).filter((n) => !n.startsWith(PREVIEW_PREFIX));
   const enabled = await enabledSet();
   const sites = (await Promise.all(names.map((n) => readSite(n, enabled)))).filter((s): s is Site => !!s);
   return sites.sort((a, b) => Number(b.enabled) - Number(a.enabled) || (a.domains[0] ?? a.name).localeCompare(b.domains[0] ?? b.name));
@@ -195,16 +196,22 @@ async function withSteps<T>(opId: string | undefined, fn: () => Promise<T>): Pro
   }
 }
 
+/** Installs certbot + its nginx plugin if missing. Returns an error message, or null when ready. */
+async function ensureCertbot(logLines: string[]): Promise<string | null> {
+  if ((await run('certbot', ['--version'], { timeoutMs: 10_000 }).catch(() => null))?.code === 0) return null;
+  logLines.push('Installing certbot…');
+  const inst = await priv('apt-get', ['-y', '-o', 'DPkg::Lock::Timeout=300', 'install', 'certbot', 'python3-certbot-nginx'], 600_000);
+  if (inst.code === 0) return null;
+  logLines.push(inst.stderr.trim().split('\n').slice(-3).join('\n'));
+  return 'Could not install certbot';
+}
+
 async function runCertbot(domains: string[], email: string | undefined, opId: string | undefined, logLines: string[]): Promise<boolean> {
   progress(opId, 'certbot', 'running', 'Getting a free certificate from Let\'s Encrypt…');
-  if ((await run('certbot', ['--version'], { timeoutMs: 10_000 }).catch(() => null))?.code !== 0) {
-    logLines.push('Installing certbot…');
-    const inst = await priv('apt-get', ['-y', '-o', 'DPkg::Lock::Timeout=300', 'install', 'certbot', 'python3-certbot-nginx'], 600_000);
-    if (inst.code !== 0) {
-      progress(opId, 'certbot', 'failed', 'Could not install certbot');
-      logLines.push(inst.stderr.trim().split('\n').slice(-3).join('\n'));
-      return false;
-    }
+  const missing = await ensureCertbot(logLines);
+  if (missing) {
+    progress(opId, 'certbot', 'failed', missing);
+    return false;
   }
   const args = ['--nginx', '--non-interactive', '--agree-tos', '--redirect', ...(email ? ['-m', email] : ['--register-unsafely-without-email'])];
   for (const d of domains) args.push('-d', d);
@@ -326,6 +333,69 @@ async function setEnabled(name: string, enabled: boolean): Promise<Site> {
   }
   await nginxReload();
   return getSite(name);
+}
+
+// ── preview addresses (p<port>.<ip>.sslip.io → the daemon's preview gate) ─────────────
+
+export const PREVIEW_PREFIX = 'nicode-preview-';
+const previewFile = (port: number) => `${PREVIEW_PREFIX}${port}.conf`;
+
+export async function listPreviewSites(): Promise<PreviewSite[]> {
+  const names = (await readdir(AVAILABLE).catch(() => [] as string[])).filter((n) => n.startsWith(PREVIEW_PREFIX));
+  const out: PreviewSite[] = [];
+  for (const n of names) {
+    const port = Number(n.slice(PREVIEW_PREFIX.length).replace(/\.conf$/, ''));
+    const parsed = parseSite(await readFile(path.join(AVAILABLE, n), 'utf8').catch(() => ''));
+    if (port && parsed.domains[0]) out.push({ port, host: parsed.domains[0], https: parsed.https });
+  }
+  return out.sort((a, b) => a.port - b.port);
+}
+
+/**
+ * Makes `host` reach the daemon through nginx (first use per port): config → enable → test →
+ * reload → certificate. Later calls return at once. HTTPS failures leave a working http preview.
+ */
+export async function ensurePreviewSite(port: number, host: string, steps: Steps): Promise<{ https: boolean }> {
+  const name = previewFile(port);
+  const existing = (await listPreviewSites()).find((p) => p.port === port);
+  const enabled = (await enabledSet()).has(name);
+  if (existing?.host === host && enabled && existing.https) {
+    steps.set('site', 'Preview address', 'done', `https://${host}`);
+    return { https: true };
+  }
+  const st = await status();
+  if (!st.supported) throw new RpcError('forbidden', st.reason ?? 'Previews need nginx on this server');
+  if (!existing || existing.host !== host || !enabled) {
+    steps.set('site', 'Preview address', 'running', host);
+    const file = path.join(AVAILABLE, name);
+    await writeRootFile(file, renderSite({ domains: [host], kind: 'proxy', root: '/', port: app.config.port }));
+    await priv('ln', ['-sf', file, path.join(ENABLED, name)]);
+    const t = await nginxTest();
+    if (!t.ok) {
+      await priv('rm', ['-f', path.join(ENABLED, name), file]);
+      steps.set('site', 'Preview address', 'failed', 'nginx rejected the preview config');
+      throw new RpcError('internal', 'nginx rejected the preview config, so it was removed', { output: t.output });
+    }
+    await nginxReload();
+    steps.set('site', 'Preview address', 'done', `http://${host}`);
+  }
+  steps.set('https', 'HTTPS certificate', 'running', "Let's Encrypt, about 20 seconds the first time…");
+  const missing = await ensureCertbot([]);
+  const r = missing ? null : await priv('certbot', ['--nginx', '--non-interactive', '--agree-tos', '--register-unsafely-without-email', '--redirect', '-d', host], 300_000);
+  if (!r || r.code !== 0) {
+    steps.set('https', 'HTTPS certificate', 'failed', missing ?? 'certbot failed; using http for now');
+    return { https: false };
+  }
+  steps.set('https', 'HTTPS certificate', 'done');
+  return { https: true };
+}
+
+export async function removePreviewSite(port: number): Promise<void> {
+  const site = (await listPreviewSites()).find((p) => p.port === port);
+  const name = previewFile(port);
+  await priv('rm', ['-f', path.join(ENABLED, name), path.join(AVAILABLE, name)]);
+  if (site?.https) await priv('certbot', ['delete', '--cert-name', site.host, '--non-interactive'], 120_000).catch(() => undefined);
+  if ((await nginxTest()).ok) await nginxReload();
 }
 
 export function registerSitesModule(): void {

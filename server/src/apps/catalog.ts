@@ -140,3 +140,44 @@ export function splitCommand(cmd: string): string[] {
   while ((m = re.exec(cmd))) out.push(m[1] ?? m[2] ?? m[3]!);
   return out;
 }
+
+export interface DevCommand {
+  file: string;
+  args: string[];
+  command: string;
+  framework: string | null;
+}
+
+const DEV_SCRIPTS = ['dev', 'develop', 'start:dev', 'serve', 'start'];
+
+/**
+ * How to run this project's dev server (hot reload) on `port`, bound to 127.0.0.1.
+ * Adds the framework's own port/host flags where `PORT` alone isn't honoured.
+ */
+export function devCommand(dir: string, port: number): DevCommand | null {
+  const pkg = readJson(path.join(dir, 'package.json'));
+  const scripts = (pkg?.scripts ?? {}) as Record<string, string>;
+  const deps = { ...(pkg?.dependencies ?? {}), ...(pkg?.devDependencies ?? {}) } as Record<string, string>;
+  const laravel = existsSync(path.join(dir, 'artisan'));
+  const script = laravel ? undefined : DEV_SCRIPTS.find((s) => typeof scripts[s] === 'string' && /^[\w:.-]+$/.test(s));
+  if (script) {
+    const body = scripts[script]!;
+    const p = String(port);
+    // Flags go after `--` so the package manager passes them to the framework's CLI.
+    let framework: string | null = null;
+    let extra: string[] = [];
+    if (deps.next || /\bnext\b/.test(body)) [framework, extra] = ['Next.js', ['-p', p, '-H', '127.0.0.1']];
+    else if (deps.nuxt || /\bnuxi?\b/.test(body)) [framework, extra] = ['Nuxt', ['--port', p, '--host', '127.0.0.1']];
+    else if (deps.astro || /\bastro\b/.test(body)) [framework, extra] = ['Astro', ['--port', p, '--host', '127.0.0.1']];
+    else if (deps['@angular/cli'] || /\bng serve\b/.test(body)) [framework, extra] = ['Angular', ['--port', p, '--host', '127.0.0.1']];
+    else if (deps.vite || /\bvite\b/.test(body)) [framework, extra] = ['Vite', ['--port', p, '--host', '127.0.0.1', '--strictPort']];
+    const pm = packageManager(dir);
+    const args = ['run', script, ...(extra.length ? (pm === 'npm' ? ['--', ...extra] : extra) : [])];
+    return { file: pm, args, command: [pm, ...args].join(' '), framework };
+  }
+  if (laravel) {
+    const args = ['artisan', 'serve', '--host=127.0.0.1', `--port=${port}`];
+    return { file: 'php', args, command: ['php', ...args].join(' '), framework: 'Laravel' };
+  }
+  return null;
+}

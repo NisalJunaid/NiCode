@@ -7,6 +7,9 @@ import { events } from './events.js';
 import { applyDeviceChange, closeAllClients, startHttpServer } from './http.js';
 import { log } from './log.js';
 import { registerAppsModule } from './modules/apps.js';
+import { registerPreviewModule } from './modules/preview.js';
+import { initPreviewKey } from './preview/auth.js';
+import { startDevJanitor, stopAllDev } from './preview/dev.js';
 import { initClaudeModule, registerClaudeModule, shutdownClaude } from './modules/claude.js';
 import { registerFsModule } from './modules/fs.js';
 import { registerGitModule } from './modules/git.js';
@@ -39,6 +42,9 @@ async function main(): Promise<void> {
   registerPushModule();
   registerSitesModule();
   registerAppsModule();
+  registerPreviewModule();
+  initPreviewKey(app.config.dataDir);
+  startDevJanitor();
   await initClaudeModule();
 
   const server = startHttpServer();
@@ -75,6 +81,7 @@ async function main(): Promise<void> {
     stopping = true;
     log.info({ signal }, 'shutting down');
     shutdownClaude();
+    stopAllDev();
     detachAllTerms(); // tmux sessions keep running
     closeAllClients();
     server.close(() => process.exit(0));

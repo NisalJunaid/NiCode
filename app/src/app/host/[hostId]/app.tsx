@@ -122,6 +122,17 @@ export default function AppDetail() {
             />
           </>
         ) : null}
+        {app.port && app.projectPath && app.status === 'online' ? (
+          <>
+            <Divider />
+            <Row
+              icon="eye-outline"
+              title="Preview"
+              subtitle="Open it in niCode's browser (HTTPS, no domain needed)"
+              onPress={() => router.push({ pathname: '/host/[hostId]/preview', params: { hostId, project: app.projectPath!, source: 'app', port: String(app.port) } })}
+            />
+          </>
+        ) : null}
         {app.port ? (
           <>
             <Divider />

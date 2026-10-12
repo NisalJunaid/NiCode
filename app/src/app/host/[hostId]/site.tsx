@@ -96,7 +96,16 @@ export default function SiteDetail() {
 
       {site.enabled ? (
         <View style={{ flexDirection: 'row', gap: space.sm }}>
-          <Button title="Open site" icon="open-outline" onPress={() => void WebBrowser.openBrowserAsync(`${site.https ? 'https' : 'http'}://${domain}`)} style={{ flex: 1 }} />
+          <Button
+            title="View"
+            icon="eye-outline"
+            onPress={() =>
+              site.projectPath
+                ? router.push({ pathname: '/host/[hostId]/preview', params: { hostId, project: site.projectPath, source: 'domain', domain } })
+                : void WebBrowser.openBrowserAsync(`${site.https ? 'https' : 'http'}://${domain}`)
+            }
+            style={{ flex: 1 }}
+          />
           {site.projectPath ? (
             <Button
               title="Open project"

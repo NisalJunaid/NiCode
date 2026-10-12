@@ -11,6 +11,8 @@ interface SettingsState {
   defaultModel: string;
   /** Colour theme. Dark unless the user picks otherwise. */
   appearance: 'dark' | 'light' | 'system';
+  /** Last preview source per project path. */
+  lastPreview: Record<string, 'dev' | 'app' | 'domain'>;
   set(patch: Partial<Omit<SettingsState, 'set'>>): void;
 }
 
@@ -21,6 +23,7 @@ export const useSettings = create<SettingsState>()(
       defaultMode: 'default',
       defaultModel: '',
       appearance: 'dark',
+      lastPreview: {},
       set: (patch) => set(patch),
     }),
     { name: 'nicode.settings', storage: kvStorage },
