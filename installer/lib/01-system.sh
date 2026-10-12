@@ -13,6 +13,17 @@ step_system() {
   export NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1
   local done_parts=()
 
+  # An earlier interrupted apt/dpkg run leaves packages half-configured; apt then refuses to
+  # install anything. Finishing it can restart services, so on an existing server we stop and
+  # let the owner run it; on a fresh host it's safe to finish automatically.
+  if [[ -n "$(dpkg --audit 2>/dev/null)" ]] || compgen -G '/var/lib/dpkg/updates/[0-9]*' >/dev/null; then
+    if [[ "$NI_HOST_MODE" == existing ]]; then
+      step_detail "dpkg has an unfinished earlier run. Fix it first: sudo NEEDRESTART_MODE=l DEBIAN_FRONTEND=noninteractive dpkg --configure -a  (then re-run the installer)"
+      return 1
+    fi
+    run_logged dpkg --configure -a
+  fi
+
   run_logged "${NI_APT[@]}" update
 
   if [[ "$NI_HOST_MODE" == fresh ]]; then
