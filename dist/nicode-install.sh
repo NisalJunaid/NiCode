@@ -1830,7 +1830,10 @@ install_cli() {
   if declare -f nicode_cli_source >/dev/null; then
     nicode_cli_source >/usr/local/bin/nicode
     if [[ -f "${BASH_SOURCE[0]:-}" ]]; then
-      cp -f "${BASH_SOURCE[0]}" /usr/local/lib/nicode/nicode-install.sh
+      # `nicode update` runs the installer from this very path; don't copy a file onto itself.
+      if [[ "$(realpath "${BASH_SOURCE[0]}")" != "$(realpath /usr/local/lib/nicode/nicode-install.sh 2>/dev/null)" ]]; then
+        cp -f "${BASH_SOURCE[0]}" /usr/local/lib/nicode/nicode-install.sh
+      fi
     elif [[ -n "${NICODE_INSTALLER_URL:-}" ]]; then
       curl -fsSL "$NICODE_INSTALLER_URL" -o /usr/local/lib/nicode/nicode-install.sh || true
     fi
