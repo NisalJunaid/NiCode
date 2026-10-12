@@ -2,7 +2,8 @@ import Constants from 'expo-constants';
 import { router } from 'expo-router';
 import { Alert, Switch, View } from 'react-native';
 import { MODE_INFO } from '@/components/chat/Composer';
-import { Divider, Row, Screen, Section, T } from '@/components/ui';
+import { Logo } from '@/components/Logo';
+import { Divider, Row, Screen, Section, Segmented, T } from '@/components/ui';
 import { resetKey } from '@/lib/deviceKey';
 import { useHosts } from '@/state/hosts';
 import { useSettings } from '@/state/settings';
@@ -15,6 +16,20 @@ export default function AppSettings() {
 
   return (
     <Screen scroll>
+      <Section title="Appearance" footer={s.appearance === 'system' ? "Follows your phone's light/dark setting." : undefined}>
+        <View style={{ padding: 12 }}>
+          <Segmented
+            value={s.appearance}
+            onChange={(appearance) => s.set({ appearance })}
+            options={[
+              { value: 'dark', label: 'Dark' },
+              { value: 'light', label: 'Light' },
+              { value: 'system', label: 'System' },
+            ]}
+          />
+        </View>
+      </Section>
+
       <Section title="Security" footer={s.graceSeconds === 0 ? 'Every connection asks for your fingerprint or face.' : 'After unlocking, reconnects within 5 minutes don\'t ask again.'}>
         <Row
           icon="finger-print"
@@ -71,9 +86,12 @@ export default function AppSettings() {
         />
       </Section>
 
-      <T size="sm" tone="faint" style={{ textAlign: 'center' }}>
-        niCode {Constants.expoConfig?.version ?? ''}
-      </T>
+      <View style={{ alignItems: 'center', gap: 8, paddingTop: 8 }}>
+        <Logo width={150} color={c.text} tagColor={c.textFaint} />
+        <T size="sm" tone="faint">
+          Version {Constants.expoConfig?.version ?? ''}
+        </T>
+      </View>
     </Screen>
   );
 }

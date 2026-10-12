@@ -23,6 +23,10 @@
   - Site details: open the site, enable HTTPS, view the nginx config, remove (niCode-created sites only).
   - **Add a domain wizard**: domain (live DNS check with the exact A records to add), then an existing project or new folder, then how to serve it (auto-detected: static / web app / PHP with version / app on a port), then HTTPS, then a live step checklist.
   - Projects show their live domains in the project list.
+- **Brand & theme**:
+  - Vector wordmark (`components/Logo.tsx`, glyph paths from Poppins via `scripts/make-logo-glyphs.py`); the launch intro (`AnimatedSplash`) plays over a black splash: Ni glides in, the blue/red capsule draws, the O pops, the e slides out, the tagline rises in.
+  - App icon: white "Ni" on black (`scripts/make-icons.py`).
+  - Appearance setting: Dark (default) / Light / System, applied app-wide with `Appearance.setColorScheme`.
 - **Run tab & apps (pm2)**:
   - Per project: running apps with Restart / Stop / Logs, "Run as an app", and quick tasks (pull, install, build, scripts, artisan) with live output.
   - App setup: npm script or command, port, environment variables, install & build first; then "Add a domain" pre-filled with the port.

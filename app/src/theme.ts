@@ -1,4 +1,5 @@
-import { Platform, useColorScheme } from 'react-native';
+import { Appearance, Platform, useColorScheme } from 'react-native';
+import { useSettings } from '@/state/settings';
 
 /** Design tokens. Dark-first; every color has a light counterpart. */
 const dark = {
@@ -70,4 +71,16 @@ export function useColors(): Colors {
 
 export function useIsDark(): boolean {
   return useColorScheme() !== 'light';
+}
+
+/**
+ * Apply the saved theme choice app-wide (screens, native alerts, keyboard): forcing the scheme makes
+ * useColorScheme() report it everywhere. Call once at startup; it keeps following the setting.
+ */
+export function applyAppearance() {
+  const apply = (a: 'dark' | 'light' | 'system') => Appearance.setColorScheme(a === 'system' ? 'unspecified' : a);
+  apply(useSettings.getState().appearance);
+  useSettings.subscribe((st, prev) => {
+    if (st.appearance !== prev.appearance) apply(st.appearance);
+  });
 }

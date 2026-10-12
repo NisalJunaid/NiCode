@@ -7,6 +7,7 @@ import { useHosts } from '@/state/hosts';
 import { space, useColors } from '@/theme';
 import { Badge, Button, Card, Icon, IconButton, Screen, StatusDot, T } from '@/components/ui';
 import { connStatus } from '@/components/ConnectionBar';
+import { Logo } from '@/components/Logo';
 
 const INSTALL_CMD =
   'curl -fsSL https://raw.githubusercontent.com/NisalJunaid/NiCode/main/dist/nicode-install.sh -o nicode-install.sh && sudo bash nicode-install.sh';
@@ -18,6 +19,7 @@ export default function Home() {
       <Stack.Screen
         options={{
           title: 'niCode',
+          headerTitle: () => <HeaderLogo />,
           headerRight: () => <IconButton icon="settings-outline" label="App settings" onPress={() => router.push('/settings')} />,
         }}
       />
@@ -75,15 +77,18 @@ function HostCard({ host }: { host: Host }) {
   );
 }
 
+function HeaderLogo() {
+  const c = useColors();
+  return <Logo width={96} color={c.text} tagline={false} />;
+}
+
 function Welcome() {
   const c = useColors();
   return (
     <Screen scroll>
       <View style={{ alignItems: 'center', gap: space.md, paddingVertical: space.xl }}>
-        <View style={{ width: 72, height: 72, borderRadius: 22, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' }}>
-          <Icon name="code-slash" size={34} color={c.accent} />
-        </View>
-        <T size="xxl" weight="700" style={{ textAlign: 'center' }}>
+        <Logo width={220} color={c.text} tagColor={c.textDim} />
+        <T size="xxl" weight="700" style={{ textAlign: 'center', marginTop: space.md }}>
           Code with Claude, from anywhere
         </T>
         <T tone="dim" style={{ textAlign: 'center' }}>

@@ -9,6 +9,8 @@ interface SettingsState {
   /** Defaults for new chats. */
   defaultMode: PermissionMode;
   defaultModel: string;
+  /** Colour theme. Dark unless the user picks otherwise. */
+  appearance: 'dark' | 'light' | 'system';
   set(patch: Partial<Omit<SettingsState, 'set'>>): void;
 }
 
@@ -18,6 +20,7 @@ export const useSettings = create<SettingsState>()(
       graceSeconds: 300,
       defaultMode: 'default',
       defaultModel: '',
+      appearance: 'dark',
       set: (patch) => set(patch),
     }),
     { name: 'nicode.settings', storage: kvStorage },

@@ -3,8 +3,11 @@ import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { AnimatedSplash } from '@/components/AnimatedSplash';
 import { useNotificationRouting } from '@/lib/push';
-import { useColors, useIsDark } from '@/theme';
+import { applyAppearance, useColors, useIsDark } from '@/theme';
+
+applyAppearance();
 
 export { ErrorScreen as ErrorBoundary } from '@/components/ErrorScreen';
 
@@ -54,6 +57,7 @@ export default function RootLayout() {
           </Stack>
         </ThemeProvider>
         </KeyboardProvider>
+        <AnimatedSplash />
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );
