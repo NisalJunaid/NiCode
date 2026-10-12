@@ -32,7 +32,7 @@ finish_summary() {
   echo
   printf '%s niCode %s %s\n' "$C_BOLD" "$state" "$C_RESET"
   printf '  Host:       %s (%s)\n' "${NI_PUBLIC_HOST:-?}" "$NICODE_TRANSPORT"
-  printf '  User:       %s   projects: %s/projects\n' "$NI_USER" "$NI_USER_HOME"
+  printf '  User:       %s   projects: %s\n' "$NI_USER" "$NI_PROJECTS_ROOT"
   printf '  Log:        %s\n' "$NI_LOG_FILE"
   printf '  Manage:     nicode status | doctor | login | logs | update\n'
   if [[ -f "$NI_TMP/pair_token" ]]; then

@@ -52,7 +52,7 @@ step_harden() {
 
   systemctl enable --now fail2ban >>"$NI_LOG_FILE" 2>&1 && notes+=("fail2ban on")
 
-  step_detail "$(IFS=';'; echo "${notes[*]}")"
+  step_detail "$(join_by ', ' "${notes[@]}")"
 }
 
 _harden_existing() {

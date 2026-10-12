@@ -52,5 +52,5 @@ step_user() {
     chown "$NI_USER:$NI_USER" "$home/.tmux.conf"
   fi
 
-  step_detail "$(IFS=';'; echo "${notes[*]}")"
+  step_detail "$(join_by ', ' "${notes[@]}")"
 }

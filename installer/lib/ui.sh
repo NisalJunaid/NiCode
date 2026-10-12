@@ -133,3 +133,11 @@ json_escape() {
   s="${s//$'\n'/\\n}"; s="${s//$'\r'/}"; s="${s//$'\t'/\\t}"
   printf '%s' "$s"
 }
+
+# join_by <sep> <items...> — "a, b, c"
+join_by() {
+  local sep="$1" out=""; shift
+  local x
+  for x in "$@"; do out+="${out:+$sep}$x"; done
+  printf '%s' "$out"
+}

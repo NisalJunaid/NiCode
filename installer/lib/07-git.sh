@@ -28,5 +28,5 @@ step_git() {
   (( NI_GH_AUTHED )) && as_user 'gh auth setup-git' && notes+=("gh logged in")
   [[ -n "$NI_GIT_NAME" ]] && notes+=("identity: $NI_GIT_NAME") || notes+=("identity from GitHub login later")
 
-  step_detail "$(IFS=';'; echo "${notes[*]}")"
+  step_detail "$(join_by ', ' "${notes[@]}")"
 }

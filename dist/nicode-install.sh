@@ -89,7 +89,7 @@ EOF
   fi
 
   (( ${#done_parts[@]} )) || done_parts+=("nothing to change")
-  step_detail "$(IFS=';'; echo "${done_parts[*]}")"
+  step_detail "$(join_by ', ' "${done_parts[@]}")"
 }
 
 # ───── lib/02-user.sh ─────
@@ -146,7 +146,7 @@ step_user() {
     chown "$NI_USER:$NI_USER" "$home/.tmux.conf"
   fi
 
-  step_detail "$(IFS=';'; echo "${notes[*]}")"
+  step_detail "$(join_by ', ' "${notes[@]}")"
 }
 
 # ───── lib/03-harden.sh ─────
@@ -203,7 +203,7 @@ step_harden() {
 
   systemctl enable --now fail2ban >>"$NI_LOG_FILE" 2>&1 && notes+=("fail2ban on")
 
-  step_detail "$(IFS=';'; echo "${notes[*]}")"
+  step_detail "$(join_by ', ' "${notes[@]}")"
 }
 
 _harden_existing() {
@@ -407,7 +407,7 @@ step_claude() {
   fi
 
   if (( NI_CLAUDE_AUTHED )); then notes+=("$ver, logged in"); else notes+=("$ver, login pending"); fi
-  step_detail "$(IFS=';'; echo "${notes[*]}")"
+  step_detail "$(join_by ', ' "${notes[@]}")"
 }
 
 # ───── lib/07-git.sh ─────
@@ -440,7 +440,7 @@ step_git() {
   (( NI_GH_AUTHED )) && as_user 'gh auth setup-git' && notes+=("gh logged in")
   [[ -n "$NI_GIT_NAME" ]] && notes+=("identity: $NI_GIT_NAME") || notes+=("identity from GitHub login later")
 
-  step_detail "$(IFS=';'; echo "${notes[*]}")"
+  step_detail "$(join_by ', ' "${notes[@]}")"
 }
 
 # ───── lib/08-daemon.sh ─────
@@ -555,7 +555,7 @@ finish_summary() {
   echo
   printf '%s niCode %s %s\n' "$C_BOLD" "$state" "$C_RESET"
   printf '  Host:       %s (%s)\n' "${NI_PUBLIC_HOST:-?}" "$NICODE_TRANSPORT"
-  printf '  User:       %s   projects: %s/projects\n' "$NI_USER" "$NI_USER_HOME"
+  printf '  User:       %s   projects: %s\n' "$NI_USER" "$NI_PROJECTS_ROOT"
   printf '  Log:        %s\n' "$NI_LOG_FILE"
   printf '  Manage:     nicode status | doctor | login | logs | update\n'
   if [[ -f "$NI_TMP/pair_token" ]]; then
@@ -1425,6 +1425,14 @@ json_escape() {
   s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
   s="${s//$'\n'/\\n}"; s="${s//$'\r'/}"; s="${s//$'\t'/\\t}"
   printf '%s' "$s"
+}
+
+# join_by <sep> <items...> — "a, b, c"
+join_by() {
+  local sep="$1" out=""; shift
+  local x
+  for x in "$@"; do out+="${out:+$sep}$x"; done
+  printf '%s' "$out"
 }
 
 # ───── bin/nicode (embedded) ─────

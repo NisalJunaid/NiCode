@@ -32,5 +32,5 @@ step_claude() {
   fi
 
   if (( NI_CLAUDE_AUTHED )); then notes+=("$ver, logged in"); else notes+=("$ver, login pending"); fi
-  step_detail "$(IFS=';'; echo "${notes[*]}")"
+  step_detail "$(join_by ', ' "${notes[@]}")"
 }

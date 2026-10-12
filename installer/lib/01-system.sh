@@ -65,5 +65,5 @@ EOF
   fi
 
   (( ${#done_parts[@]} )) || done_parts+=("nothing to change")
-  step_detail "$(IFS=';'; echo "${done_parts[*]}")"
+  step_detail "$(join_by ', ' "${done_parts[@]}")"
 }
