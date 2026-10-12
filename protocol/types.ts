@@ -277,6 +277,18 @@ export interface Methods {
   'sites.setEnabled': [{ name: string; enabled: boolean }, Site];
   'sites.enableHttps': [{ name: string; email?: string; opId?: string }, { site: Site; log: string[] }];
   'sites.remove': [{ name: string; deleteFolder?: false }, { ok: true }];
+
+  // Apps (pm2) & project tasks. See docs/05 "Apps & tasks".
+  'apps.status': [Record<string, never>, AppsStatus];
+  'apps.setup': [{ opId?: string }, AppsStatus];
+  'apps.list': [Record<string, never>, AppProcess[]];
+  'apps.create': [AppCreate, { app: AppProcess }];
+  'apps.action': [{ name: string; action: 'start' | 'stop' | 'restart' | 'delete' }, { ok: true }];
+  'apps.logs': [{ name: string; lines?: number }, { text: string }];
+  'apps.deploy': [{ name: string; opId?: string }, { app: AppProcess; steps: TaskStepState[] }];
+  'apps.startOptions': [{ projectPath: string }, AppStartOptions];
+  'tasks.list': [{ projectPath: string }, ProjectTask[]];
+  'tasks.run': [{ projectPath: string; taskId: string; opId?: string }, { code: number; output: string }];
 }
 
 // ── Websites & domains ───────────────────────────────────────────────────────
@@ -348,6 +360,69 @@ export interface SiteCreate {
 
 export type SiteStep = 'folder' | 'config' | 'enable' | 'test' | 'reload' | 'certbot';
 
+// ── Apps (pm2) & tasks ───────────────────────────────────────────────────────
+
+export interface AppsStatus {
+  node: string | null;
+  pm2: string | null;
+  /** pm2 restores saved apps after a reboot. */
+  startupEnabled: boolean;
+}
+
+export interface AppProcess {
+  name: string;
+  pmId: number;
+  status: 'online' | 'stopped' | 'errored' | 'launching' | 'stopping' | 'one-launch-status' | string;
+  cpu: number;
+  memoryMb: number;
+  uptimeSince: string | null;
+  restarts: number;
+  cwd: string;
+  projectPath: string | null;
+  /** What runs, e.g. "npm run start" or "node dist/main.js". */
+  command: string;
+  port: number | null;
+  /** Something answers on the port (null when no port is known). */
+  listening: boolean | null;
+  /** Started by niCode (others are listed and controllable too). */
+  managed: boolean;
+}
+
+export interface AppCreate {
+  projectPath: string;
+  name: string;
+  start: { kind: 'script'; script: string } | { kind: 'command'; command: string };
+  port?: number;
+  env?: Record<string, string>;
+  /** Run install + build before starting. */
+  buildFirst?: boolean;
+  opId?: string;
+}
+
+export interface AppStartOptions {
+  /** package.json scripts suitable for running (start, serve, preview, …). */
+  scripts: { name: string; command: string }[];
+  suggested: { kind: 'script'; script: string } | { kind: 'command'; command: string } | null;
+  port: number | null;
+  hasBuild: boolean;
+  reason: string;
+}
+
+export interface ProjectTask {
+  id: string;
+  label: string;
+  /** The exact command that will run. */
+  command: string;
+  group: 'install' | 'build' | 'script' | 'php' | 'git';
+}
+
+export interface TaskStepState {
+  step: string;
+  label: string;
+  status: 'running' | 'done' | 'failed' | 'skipped';
+  detail?: string;
+}
+
 export interface SeqEvent {
   seq: number;
   ts: string;
@@ -380,6 +455,10 @@ export interface Events {
   'claude.permission.request': PermissionRequest;
   'claude.permission.resolved': { requestId: string; behavior: 'allow' | 'deny' | 'timeout' };
   'fs.changed': { projectPath: string; paths: string[] };
+  /** Output of a running task / build / deploy step (matched by opId). */
+  'tasks.output': { opId: string; chunk: string };
+  /** Steps of apps.create / apps.deploy / apps.setup. */
+  'tasks.step': { opId: string } & TaskStepState;
   /** Live steps of sites.create / sites.enableHttps (matched by the opId the app sent). */
   'sites.progress': { opId: string; step: SiteStep; status: 'running' | 'done' | 'failed' | 'skipped'; detail?: string };
 }

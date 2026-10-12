@@ -29,7 +29,7 @@ const KIND_HELP: Record<SiteKind, string> = {
  */
 export default function AddDomain() {
   const c = useColors();
-  const { hostId, project: projectParam } = useLocalSearchParams<{ hostId: string; project?: string }>();
+  const { hostId, project: projectParam, kind: kindParam, port: portParam } = useLocalSearchParams<{ hostId: string; project?: string; kind?: SiteKind; port?: string }>();
   const { client } = useConnection(hostId);
 
   const [status, setStatus] = useState<SitesStatus | null>(null);
@@ -42,9 +42,9 @@ export default function AddDomain() {
   const [projectPath, setProjectPath] = useState<string | null>(projectParam ?? null);
   const [folder, setFolder] = useState('');
   const [suggestion, setSuggestion] = useState<SiteSuggestion | null>(null);
-  const [kind, setKind] = useState<SiteKind>('static');
+  const [kind, setKind] = useState<SiteKind>(kindParam ?? 'static');
   const [webRoot, setWebRoot] = useState('');
-  const [port, setPort] = useState('3000');
+  const [port, setPort] = useState(portParam ?? '3000');
   const [php, setPhp] = useState<string | null>(null);
   const [https, setHttps] = useState(true);
   const [email, setEmail] = useState('');
@@ -68,7 +68,8 @@ export default function AddDomain() {
 
   // Suggest how to serve the chosen project.
   useEffect(() => {
-    if (!client || target !== 'existing' || !projectPath) return;
+    // Coming from an app (kind/port given): keep those instead of guessing.
+    if (!client || target !== 'existing' || !projectPath || kindParam) return;
     let cancelled = false;
     client.call('sites.detect', { projectPath }).then((s) => {
       if (cancelled) return;
@@ -80,7 +81,7 @@ export default function AddDomain() {
     return () => {
       cancelled = true;
     };
-  }, [client, target, projectPath]);
+  }, [client, target, projectPath, kindParam]);
 
   const clean = domain.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
   const domainOk = /^(?!-)([a-z0-9-]{1,63}\.)+[a-z]{2,63}$/.test(clean);

@@ -20,7 +20,8 @@ import { resolveInProject } from '../paths.js';
 import { register, RpcError } from '../rpc.js';
 import { detectSite } from '../sites/detect.js';
 import { isValidDomain, normalizeDomain, parseSite, phpVersionFromSocket, renderSite, siteFileName, sortVersionsDesc } from '../sites/nginx.js';
-import { run, type RunResult } from '../util/exec.js';
+import { run } from '../util/exec.js';
+import { priv } from '../util/priv.js';
 import { projectOf } from './projects.js';
 
 const NGINX = process.env.NICODE_NGINX_DIR ?? '/etc/nginx';
@@ -30,11 +31,6 @@ const PHP_RUN = process.env.NICODE_PHP_RUN_DIR ?? '/run/php';
 const FOLDER_RE = /^[A-Za-z0-9._-]{1,100}$/;
 
 // ── privileged helpers (daemon may run as root, or as a user with passwordless sudo) ──
-
-function priv(file: string, args: string[], timeoutMs = 60_000): Promise<RunResult> {
-  if (app.isRoot) return run(file, args, { timeoutMs });
-  return run('sudo', ['-n', file, ...args], { timeoutMs });
-}
 
 async function writeRootFile(dest: string, content: string): Promise<void> {
   if (app.isRoot) {

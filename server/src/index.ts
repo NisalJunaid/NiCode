@@ -6,6 +6,7 @@ import { configPath, loadConfig } from './config.js';
 import { events } from './events.js';
 import { applyDeviceChange, closeAllClients, startHttpServer } from './http.js';
 import { log } from './log.js';
+import { registerAppsModule } from './modules/apps.js';
 import { initClaudeModule, registerClaudeModule, shutdownClaude } from './modules/claude.js';
 import { registerFsModule } from './modules/fs.js';
 import { registerGitModule } from './modules/git.js';
@@ -37,6 +38,7 @@ async function main(): Promise<void> {
   registerClaudeModule();
   registerPushModule();
   registerSitesModule();
+  registerAppsModule();
   await initClaudeModule();
 
   const server = startHttpServer();

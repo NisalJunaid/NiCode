@@ -75,6 +75,7 @@ export default function ProjectLayout() {
         />
         <Tabs.Screen name="files" options={{ title: 'Files', tabBarIcon: ({ color }) => <Icon name="folder-outline" color={color} size={22} /> }} />
         <Tabs.Screen name="changes" options={{ title: 'Changes', tabBarIcon: ({ color }) => <Icon name="git-compare-outline" color={color} size={22} /> }} />
+        <Tabs.Screen name="run" options={{ title: 'Run', tabBarIcon: ({ color }) => <Icon name="play-circle-outline" color={color} size={22} /> }} />
         <Tabs.Screen name="terminal" options={{ title: 'Terminal', tabBarIcon: ({ color }) => <Icon name="terminal-outline" color={color} size={22} /> }} />
       </Tabs>
     </ProjectContext.Provider>

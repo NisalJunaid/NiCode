@@ -48,6 +48,9 @@ export default function RootLayout() {
             <Stack.Screen name="host/[hostId]/sites" options={{ title: 'Websites & domains' }} />
             <Stack.Screen name="host/[hostId]/site" options={{ title: '' }} />
             <Stack.Screen name="host/[hostId]/add-domain" options={{ title: 'Add a domain' }} />
+            <Stack.Screen name="host/[hostId]/apps" options={{ title: 'Apps' }} />
+            <Stack.Screen name="host/[hostId]/app" options={{ title: '' }} />
+            <Stack.Screen name="host/[hostId]/app-setup" options={{ title: 'Run as an app' }} />
           </Stack>
         </ThemeProvider>
         </KeyboardProvider>

@@ -137,6 +137,19 @@ Methods `sites.*` manage nginx sites on the server. The daemon needs root or pas
 - **`sites.enableHttps`**: runs certbot `--nginx --redirect` for the site's domains, installing certbot if it's missing.
 - **`sites.remove`**: managed sites only. Removes the config, the enabled link and the certificate. **Project folders are never deleted.**
 
+## Apps & tasks (pm2)
+Methods `apps.*` keep project apps running with pm2 as the daemon's user (`PM2_HOME=~/.pm2`). Apps get a clean environment (PATH, HOME, LANG and so on, plus `PORT` and your variables); daemon secrets are never passed on.
+- **`apps.status`**: Node and pm2 versions, and whether pm2 starts on boot (`systemctl is-enabled pm2-<user>`).
+- **`apps.setup {opId?}`**: installs pm2 globally (root or passwordless sudo), runs `pm2 startup systemd`, then `pm2 save`. Progress comes as `tasks.step` events.
+- **`apps.list`**: every pm2 process: status, CPU, memory, uptime, restarts, cwd, linked project, port (from its `PORT` env) and whether that port answers. `managed` = started by niCode.
+- **`apps.startOptions {projectPath}`**: start scripts from package.json (`start:prod` > `start` > `serve` > `preview`), a suggested script or command (node entry files, FastAPI via uvicorn), the port from `.env`, and whether there is a `build` script.
+- **`apps.create`** (`AppCreate`): optional install + build, then `pm2 start` (npm script or a plain command with `--interpreter none`), `pm2 save`, and a wait for the port. Steps and output stream as `tasks.step` / `tasks.output`.
+- **`apps.action {name, action}`**: start / stop / restart / delete, each followed by `pm2 save`.
+- **`apps.logs {name, lines?}`**: the last lines of stdout + stderr.
+- **`apps.deploy {name, opId?}`**: `git pull` → install → build → `pm2 reload` (no downtime) → port check.
+- **`tasks.list {projectPath}`**: one-tap tasks found in the project: git pull, install (npm/pnpm/yarn/composer), package.json scripts (not dev/watch/serve/start or pre/post hooks), Laravel artisan commands.
+- **`tasks.run {projectPath, taskId, opId?}`**: runs a listed task **by id only** (the client never sends a command line) and returns `{code, output}`; output streams as `tasks.output {opId, chunk}`. Times out after 30 minutes.
+
 ## Reconnect
 1. Reconnect with backoff (0.5 s → 30 s max), and immediately when the app returns to the foreground.
 2. `server.info`.

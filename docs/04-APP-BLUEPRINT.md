@@ -23,6 +23,10 @@
   - Site details: open the site, enable HTTPS, view the nginx config, remove (niCode-created sites only).
   - **Add a domain wizard**: domain (live DNS check with the exact A records to add), then an existing project or new folder, then how to serve it (auto-detected: static / web app / PHP with version / app on a port), then HTTPS, then a live step checklist.
   - Projects show their live domains in the project list.
+- **Run tab & apps (pm2)**:
+  - Per project: running apps with Restart / Stop / Logs, "Run as an app", and quick tasks (pull, install, build, scripts, artisan) with live output.
+  - App setup: npm script or command, port, environment variables, install & build first; then "Add a domain" pre-filled with the port.
+  - App details: status, one-tap deploy (pull → install → build → reload), live logs. A one-time "Set up pm2" banner turns on start-on-boot.
 - **App settings**: "Ask every time" for biometrics, the default chat mode, and reset this phone's key.
 
 **Deviations from the plan below**
