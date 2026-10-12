@@ -266,7 +266,87 @@ export interface Methods {
 
   // Push
   'push.register': [{ expoPushToken: string; platform: 'ios' | 'android' }, { ok: true }];
+
+  // Websites & domains (nginx). See docs/05 "Sites".
+  'sites.status': [Record<string, never>, SitesStatus];
+  'sites.list': [Record<string, never>, Site[]];
+  'sites.config': [{ name: string }, { text: string }];
+  'sites.checkDns': [{ domain: string }, DnsCheck];
+  'sites.detect': [{ projectPath: string }, SiteSuggestion];
+  'sites.create': [SiteCreate, { site: Site; log: string[] }];
+  'sites.setEnabled': [{ name: string; enabled: boolean }, Site];
+  'sites.enableHttps': [{ name: string; email?: string; opId?: string }, { site: Site; log: string[] }];
+  'sites.remove': [{ name: string; deleteFolder?: false }, { ok: true }];
 }
+
+// ── Websites & domains ───────────────────────────────────────────────────────
+
+/** static = plain files; spa = single-page app (unknown paths → index.html); php = php-fpm (e.g. Laravel); proxy = app on a local port. */
+export type SiteKind = 'static' | 'spa' | 'php' | 'proxy';
+
+export interface Site {
+  /** nginx config file name in sites-available (e.g. "shop.example.com.conf"). */
+  name: string;
+  enabled: boolean;
+  /** Created by niCode (only these can be removed from the app). */
+  managed: boolean;
+  /** niCode's own site; never changed from the app. */
+  protected: boolean;
+  domains: string[];
+  kind: SiteKind | 'unknown';
+  root: string | null;
+  proxyPort: number | null;
+  /** Project this site serves (its root is inside the project). */
+  projectPath: string | null;
+  https: boolean;
+  certExpiresAt: string | null;
+}
+
+export interface SitesStatus {
+  supported: boolean;
+  webServer: 'nginx' | 'caddy' | 'none';
+  /** Why domains can't be managed here (when !supported). */
+  reason?: string;
+  serverIp: string | null;
+  certbot: boolean;
+  /** Installed php-fpm versions, e.g. ["8.2", "8.1"]. */
+  phpVersions: string[];
+}
+
+export interface DnsCheck {
+  domain: string;
+  addresses: string[];
+  serverIp: string | null;
+  pointsHere: boolean;
+}
+
+export interface SiteSuggestion {
+  kind: SiteKind;
+  /** Folder inside the project to serve ('' = project root). */
+  webRoot: string;
+  port: number | null;
+  /** Human explanation, e.g. "Laravel app (artisan found) → serve public/ with PHP 8.2". */
+  reason: string;
+}
+
+export interface SiteCreate {
+  domain: string;
+  /** Also serve www.<domain>. */
+  includeWww: boolean;
+  /** Existing project folder, or a new folder created under projectsRoot. */
+  project: { path: string } | { newFolder: string };
+  kind: SiteKind;
+  webRoot: string;
+  port?: number;
+  phpVersion?: string;
+  https: boolean;
+  /** Let's Encrypt account email (optional). */
+  email?: string;
+  /** Echoed in sites.progress events. */
+  opId?: string;
+}
+
+export type SiteStep = 'folder' | 'config' | 'enable' | 'test' | 'reload' | 'certbot';
 
 export interface SeqEvent {
   seq: number;
@@ -300,6 +380,8 @@ export interface Events {
   'claude.permission.request': PermissionRequest;
   'claude.permission.resolved': { requestId: string; behavior: 'allow' | 'deny' | 'timeout' };
   'fs.changed': { projectPath: string; paths: string[] };
+  /** Live steps of sites.create / sites.enableHttps (matched by the opId the app sent). */
+  'sites.progress': { opId: string; step: SiteStep; status: 'running' | 'done' | 'failed' | 'skipped'; detail?: string };
 }
 
 export type EventName = keyof Events;

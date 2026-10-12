@@ -122,6 +122,21 @@ The daemon passes the CLI's stream-json objects through **unchanged** inside `Se
 
 Unknown types are shown as a collapsed "raw event" row, never as an error.
 
+## Sites (websites & domains, nginx)
+Methods `sites.*` manage nginx sites on the server. The daemon needs root or passwordless sudo, and nginx. Caddy-based servers report `supported: false` for now.
+- **`sites.status`**: `supported`, the web server, the server's public IP, certbot presence, and installed php-fpm versions (from `/run/php/php*-fpm.sock`).
+- **`sites.list`**: every file in `sites-available`, with enabled state (via `sites-enabled`), parsed domains, kind, root or proxy port, linked project (when the root is inside `projectsRoot`), and HTTPS with certificate expiry.
+  - `managed` = created by niCode (marker comment).
+  - `protected` = niCode's own site or `default`; these are never changed.
+- **`sites.checkDns {domain}`**: the domain's A records compared with the server IP.
+- **`sites.detect {projectPath}`**: suggests kind, webRoot and port (Laravel → php `public/`; Next/Nuxt/Express → proxy with `PORT` from `.env` or 3000; Vite/React → spa `dist/`; and so on).
+- **`sites.create`** (`SiteCreate`): steps `folder → config → enable → test → reload → certbot`, each reported live as a `sites.progress {opId, step, status, detail}` event.
+  - A failed `nginx -t` removes the new site again.
+  - A certbot failure leaves the site working on http; the response still succeeds, and the `certbot` step is reported as failed with a hint.
+- **`sites.setEnabled`**: toggles the `sites-enabled` symlink, runs `nginx -t` (reverting on failure), then reloads.
+- **`sites.enableHttps`**: runs certbot `--nginx --redirect` for the site's domains, installing certbot if it's missing.
+- **`sites.remove`**: managed sites only. Removes the config, the enabled link and the certificate. **Project folders are never deleted.**
+
 ## Reconnect
 1. Reconnect with backoff (0.5 s → 30 s max), and immediately when the app returns to the foreground.
 2. `server.info`.

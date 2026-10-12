@@ -19,12 +19,21 @@ export default function Projects() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [query, setQuery] = useState('');
+  const [domains, setDomains] = useState<Record<string, string[]>>({});
 
   const load = useCallback(async () => {
     if (!client) return;
     try {
       setProjects(await client.call('projects.list', {}));
       setLoadError(null);
+      // Best effort: which projects have live domains (needs nginx; silently skipped otherwise).
+      const st = await client.call('sites.status', {}).catch(() => null);
+      if (st?.supported) {
+        const sites = await client.call('sites.list', {}).catch(() => []);
+        const map: Record<string, string[]> = {};
+        for (const s of sites) if (s.projectPath && s.enabled && s.domains[0]) (map[s.projectPath] ??= []).push(s.domains[0]);
+        setDomains(map);
+      }
     } catch (err) {
       setLoadError(errorMessage(err));
     }
@@ -115,7 +124,7 @@ export default function Projects() {
               <Row
                 icon={item.isGit ? 'git-branch-outline' : 'folder-outline'}
                 title={item.name}
-                subtitle={[item.branch, item.lastOpenedAt ? `used ${relativeTime(item.lastOpenedAt)}` : null].filter(Boolean).join(' · ') || undefined}
+                subtitle={[domains[item.path]?.join(', '), item.branch, item.lastOpenedAt ? `used ${relativeTime(item.lastOpenedAt)}` : null].filter(Boolean).join(' · ') || undefined}
                 onPress={() => router.push({ pathname: '/host/[hostId]/project/[projectKey]', params: { hostId, projectKey: pathKey(item.path) } })}
               />
             </View>

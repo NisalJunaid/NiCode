@@ -37,11 +37,18 @@ export default function ProjectLayout() {
             </View>
           ),
           headerRight: () => (
+            <View style={{ flexDirection: 'row' }}>
+            <IconButton
+              icon="globe-outline"
+              label="Domains for this project"
+              onPress={() => router.push({ pathname: '/host/[hostId]/sites', params: { hostId, project: projectPath } })}
+            />
             <IconButton
               icon="chatbubbles-outline"
               label="All chats in this project"
               onPress={() => router.push({ pathname: '/host/[hostId]/sessions', params: { hostId, project: projectPath } })}
             />
+            </View>
           ),
         }}
       />

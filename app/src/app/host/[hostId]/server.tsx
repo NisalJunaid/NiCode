@@ -107,6 +107,10 @@ export default function ServerSettings() {
           />
         </Section>
 
+        <Section title="Websites" footer="nginx sites on this server: domains, HTTPS, on/off.">
+          <Row icon="globe-outline" title="Websites & domains" subtitle="Add a domain to a project in one tap" onPress={() => router.push({ pathname: '/host/[hostId]/sites', params: { hostId } })} />
+        </Section>
+
         <Section title="Devices with access" footer="Tap a device to remove it. On the server: nicode token list.">
           {devices === null ? (
             <Row title="Loading…" chevron={false} />

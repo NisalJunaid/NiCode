@@ -38,6 +38,12 @@ export function basename(p: string): string {
 export function relativeTime(iso: string | null | undefined): string {
   if (!iso) return '';
   const s = Math.round((Date.now() - Date.parse(iso)) / 1000);
+  if (s < -45) {
+    const f = -s;
+    if (f < 3600) return `in ${Math.round(f / 60)} min`;
+    if (f < 86400) return `in ${Math.round(f / 3600)} h`;
+    return `in ${Math.round(f / 86400)} d`;
+  }
   if (s < 45) return 'just now';
   if (s < 3600) return `${Math.round(s / 60)} min ago`;
   if (s < 86400) return `${Math.round(s / 3600)} h ago`;

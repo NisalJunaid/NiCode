@@ -18,6 +18,11 @@
 - **Changes**: branch with ahead/behind, Pull/Push, staged and unstaged groups, a diff viewer (stage/unstage), long-press to discard, and a commit box.
 - **Terminal**: xterm.js on the server's tmux (survives disconnects), with an extra-keys bar (esc, tab, sticky ctrl, ^C, arrows, symbols).
 - **Server settings**: status and versions, Claude and GitHub logins (in-app flows), and devices with access (remove any, including this phone).
+- **Websites & domains** (Server settings, or the globe icon in a project):
+  - The list of nginx sites with on/off switches, HTTPS status and certificate renewal, and the linked project.
+  - Site details: open the site, enable HTTPS, view the nginx config, remove (niCode-created sites only).
+  - **Add a domain wizard**: domain (live DNS check with the exact A records to add), then an existing project or new folder, then how to serve it (auto-detected: static / web app / PHP with version / app on a port), then HTTPS, then a live step checklist.
+  - Projects show their live domains in the project list.
 - **App settings**: "Ask every time" for biometrics, the default chat mode, and reset this phone's key.
 
 **Deviations from the plan below**

@@ -45,6 +45,9 @@ export default function RootLayout() {
             <Stack.Screen name="host/[hostId]/diff" options={{ title: '' }} />
             <Stack.Screen name="host/[hostId]/sessions" options={{ title: 'Chats', presentation: 'modal' }} />
             <Stack.Screen name="host/[hostId]/new-project" options={{ title: 'New project', presentation: 'modal' }} />
+            <Stack.Screen name="host/[hostId]/sites" options={{ title: 'Websites & domains' }} />
+            <Stack.Screen name="host/[hostId]/site" options={{ title: '' }} />
+            <Stack.Screen name="host/[hostId]/add-domain" options={{ title: 'Add a domain' }} />
           </Stack>
         </ThemeProvider>
         </KeyboardProvider>

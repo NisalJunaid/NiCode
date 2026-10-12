@@ -13,6 +13,7 @@ import { registerProjectsModule } from './modules/projects.js';
 import { registerPushModule } from './modules/push.js';
 import { registerServerModule } from './modules/server.js';
 import { registerSetupModule } from './modules/setup.js';
+import { registerSitesModule } from './modules/sites.js';
 import { detachAllTerms, registerTermModule } from './modules/term.js';
 import { setClaudeReadyCheck } from './rpc.js';
 
@@ -35,6 +36,7 @@ async function main(): Promise<void> {
   registerTermModule();
   registerClaudeModule();
   registerPushModule();
+  registerSitesModule();
   await initClaudeModule();
 
   const server = startHttpServer();
