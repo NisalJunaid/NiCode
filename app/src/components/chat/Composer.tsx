@@ -30,6 +30,8 @@ interface Props {
   model: string;
   modes: PermissionMode[];
   placeholder?: string;
+  /** Pre-fills the message box once per `id` (e.g. "Ask Claude" from a log). */
+  draft?: { id: string; text: string };
   onSend: (text: string, attachments: Attachment[]) => Promise<boolean> | boolean;
   onStop: () => void;
   onChangeMode: (m: PermissionMode) => void;
@@ -37,10 +39,15 @@ interface Props {
 }
 
 /** Message box + mode/model chip + send/stop. Grows with the text; send never hides behind the keyboard. */
-export function Composer({ running, disabled, mode, model, modes, placeholder, onSend, onStop, onChangeMode, onChangeModel }: Props) {
+export function Composer({ running, disabled, mode, model, modes, placeholder, draft, onSend, onStop, onChangeMode, onChangeModel }: Props) {
   const c = useColors();
   const insets = useSafeAreaInsets();
-  const [text, setText] = useState('');
+  const [text, setText] = useState(draft?.text ?? '');
+  const [draftId, setDraftId] = useState(draft?.id);
+  if (draft && draft.id !== draftId) {
+    setDraftId(draft.id);
+    setText(draft.text);
+  }
   const [sheet, setSheet] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [picking, setPicking] = useState(false);

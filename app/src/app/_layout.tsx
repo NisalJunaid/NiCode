@@ -55,6 +55,8 @@ export default function RootLayout() {
             <Stack.Screen name="host/[hostId]/app" options={{ title: '' }} />
             <Stack.Screen name="host/[hostId]/app-setup" options={{ title: 'Run as an app' }} />
             <Stack.Screen name="host/[hostId]/preview" options={{ title: 'Preview' }} />
+            <Stack.Screen name="host/[hostId]/logs" options={{ title: 'Logs' }} />
+            <Stack.Screen name="host/[hostId]/log" options={{ title: '' }} />
           </Stack>
         </ThemeProvider>
         </KeyboardProvider>

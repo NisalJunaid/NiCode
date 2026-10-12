@@ -47,7 +47,7 @@ interface Pm2Proc {
   pm2_env?: Record<string, any> & { env?: Record<string, string> };
 }
 
-async function listApps(): Promise<AppProcess[]> {
+export async function listApps(): Promise<AppProcess[]> {
   const r = await pm2(['jlist']);
   if (r.code !== 0) return [];
   let procs: Pm2Proc[] = [];

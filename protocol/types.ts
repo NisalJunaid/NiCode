@@ -296,6 +296,11 @@ export interface Methods {
   'apps.startOptions': [{ projectPath: string }, AppStartOptions];
   'tasks.list': [{ projectPath: string }, ProjectTask[]];
   'tasks.run': [{ projectPath: string; taskId: string; opId?: string }, { code: number; output: string }];
+  // Logs (see docs/05 "Logs")
+  'logs.sources': [{ projectPath?: string }, LogSource[]];
+  'logs.tail': [{ id: string; lines?: number; filter?: string }, { text: string }];
+  'logs.follow': [{ id: string }, { followId: string }];
+  'logs.unfollow': [{ followId: string }, { ok: true }];
   // Live preview (see docs/05 "Live preview")
   'preview.status': [Record<string, never>, PreviewStatus];
   'preview.open': [{ port: number; opId?: string }, PreviewLink];
@@ -432,6 +437,16 @@ export interface ProjectTask {
   group: 'install' | 'build' | 'script' | 'php' | 'git';
 }
 
+/** A log the server can show. Read by `id` only (the path is informational). */
+export interface LogSource {
+  id: string;
+  label: string;
+  group: 'nginx' | 'pm2' | 'project' | 'system';
+  /** File path or command, for display. */
+  detail: string;
+  projectPath: string | null;
+}
+
 export interface PreviewStatus {
   /** Previews of ports need nginx + root/sudo (like Sites). Domain previews always work. */
   supported: boolean;
@@ -513,6 +528,7 @@ export interface Events {
   'fs.changed': { projectPath: string; paths: string[] };
   /** Output of a running task / build / deploy step (matched by opId). */
   'tasks.output': { opId: string; chunk: string };
+  'logs.data': { followId: string; chunk: string };
   /** Steps of apps.create / apps.deploy / apps.setup. */
   'tasks.step': { opId: string } & TaskStepState;
   /** Live steps of sites.create / sites.enableHttps (matched by the opId the app sent). */

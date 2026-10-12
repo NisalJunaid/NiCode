@@ -111,6 +111,8 @@ export default function ServerSettings() {
           <Row icon="globe-outline" title="Websites & domains" subtitle="Add a domain to a project in one tap" onPress={() => router.push({ pathname: '/host/[hostId]/sites', params: { hostId } })} />
           <Divider />
           <Row icon="play-circle-outline" title="Apps" subtitle="Running apps: restart, deploy, logs" onPress={() => router.push({ pathname: '/host/[hostId]/apps', params: { hostId } })} />
+          <Divider />
+          <Row icon="document-text-outline" title="Logs" subtitle="nginx, apps, Laravel, niCode, system: live" onPress={() => router.push({ pathname: '/host/[hostId]/logs', params: { hostId } })} />
         </Section>
 
         <Section title="Devices with access" footer="Tap a device to remove it. On the server: nicode token list.">

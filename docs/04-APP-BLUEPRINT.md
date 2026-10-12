@@ -24,6 +24,7 @@
   - **Add a domain wizard**: domain (live DNS check with the exact A records to add), then an existing project or new folder, then how to serve it (auto-detected: static / web app / PHP with version / app on a port), then HTTPS, then a live step checklist.
   - Projects show their live domains in the project list.
 - **Live preview** (eye icon in a project, Run tab, app cards, site detail): choose Dev server (start/stop, live output), Running app or Domain, then an in-app browser with back/forward/reload, phone ↔ desktop width, and open in the system browser.
+- **Logs** (Server → Logs, or a project's Run tab): grouped sources; the viewer has filter, Live follow, wrap, error/warning colouring, and long-press lines → **Ask Claude**, which opens the project chat with the lines pre-filled.
 - **Images in chat**: attach up to 4 photos or screenshots (camera or library), resized on the phone before sending.
 - **Brand & theme**:
   - Vector wordmark (`components/Logo.tsx`, glyph paths from Poppins via `scripts/make-logo-glyphs.py`); the launch intro (`AnimatedSplash`) plays over a black splash: Ni glides in, the blue/red capsule draws, the O pops, the e slides out, the tagline rises in.

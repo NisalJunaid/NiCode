@@ -25,7 +25,7 @@ const openSession = new Map<string, string | null>();
 export default function ChatScreen() {
   const c = useColors();
   const { hostId, projectPath } = useProject();
-  const { session: sessionParam } = useGlobalSearchParams<{ session?: string }>();
+  const { session: sessionParam, draft, draftId } = useGlobalSearchParams<{ session?: string; draft?: string; draftId?: string }>();
   const memoKey = `${hostId}:${projectPath}`;
   const { client, state, info, error } = useConnection(hostId);
   const settings = useSettings();
@@ -153,6 +153,7 @@ export default function ChatScreen() {
         model={model}
         modes={info?.permissionModes ?? ['default', 'acceptEdits', 'plan']}
         placeholder={sessionId ? undefined : 'What should Claude do in this project?'}
+        draft={draft && draftId ? { id: draftId, text: draft } : undefined}
         onSend={send}
         onStop={() => sessionId && client?.call('claude.interrupt', { sessionId }).catch(() => undefined)}
         onChangeMode={changeMode}

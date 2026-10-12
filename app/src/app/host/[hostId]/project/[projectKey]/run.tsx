@@ -88,7 +88,10 @@ export default function RunTab() {
     >
       <ConnectionBar client={client} state={state} error={error} />
       {client ? <Pm2Setup client={client} status={status} onDone={(s) => { setStatus(s); void load(); }} /> : null}
-      <Button title="Live preview" icon="eye-outline" kind="secondary" onPress={() => router.push({ pathname: '/host/[hostId]/preview', params: { hostId, project: projectPath } })} />
+      <View style={{ flexDirection: 'row', gap: space.sm }}>
+        <Button title="Live preview" icon="eye-outline" kind="secondary" onPress={() => router.push({ pathname: '/host/[hostId]/preview', params: { hostId, project: projectPath } })} style={{ flex: 1 }} />
+        <Button title="Logs" icon="document-text-outline" kind="secondary" onPress={() => router.push({ pathname: '/host/[hostId]/logs', params: { hostId, project: projectPath } })} style={{ flex: 1 }} />
+      </View>
 
       <View style={{ gap: space.sm }}>
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>

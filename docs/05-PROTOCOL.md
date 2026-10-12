@@ -151,6 +151,20 @@ Methods `apps.*` keep project apps running with pm2 as the daemon's user (`PM2_H
 - **`tasks.list {projectPath}`**: one-tap tasks found in the project: git pull, install (npm/pnpm/yarn/composer), package.json scripts (not dev/watch/serve/start or pre/post hooks), Laravel artisan commands.
 - **`tasks.run {projectPath, taskId, opId?}`**: runs a listed task **by id only** (the client never sends a command line) and returns `{code, output}`; output streams as `tasks.output {opId, chunk}`. Times out after 30 minutes.
 
+## Logs
+- **`logs.sources {projectPath?}`** returns a catalog of `LogSource {id, label, group, detail, projectPath}` built on the server:
+  - nginx access and error logs per enabled site (`access_log` / `error_log`) plus the global ones;
+  - pm2 output and error logs per app (newest file in `~/.pm2/logs`);
+  - Laravel `storage/logs/laravel*.log` (newest);
+  - the niCode daemon (`journalctl -u nicode`);
+  - `/var/log/syslog`.
+
+  With `projectPath`, only that project's logs are listed.
+- **`logs.tail {id, lines≤2000, filter?}`** → `{text}`. Logs are read **by id only**, so the client never sends a path. Files the daemon can't read go through root (`tail` via sudo). The filter is a case-insensitive substring.
+- **`logs.follow {id}`** → `{followId}`. New text arrives as `logs.data {followId, chunk}` events.
+  - Readable files are polled every second (rotation is handled); otherwise `tail -F` / `journalctl -f` run as root.
+  - `logs.unfollow {followId}`. Follows end automatically when the connection closes (max 4 per connection).
+
 ## Live preview
 Preview a project's **dev server**, a **running app** (any port), or a **linked domain** inside the app.
 - **Port previews** get their own address, `p<port>.<ip-dashed>.sslip.io`, so the page runs at the root of its own origin and absolute asset paths keep working.

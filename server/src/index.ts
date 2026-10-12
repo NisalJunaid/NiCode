@@ -7,6 +7,7 @@ import { events } from './events.js';
 import { applyDeviceChange, closeAllClients, startHttpServer } from './http.js';
 import { log } from './log.js';
 import { registerAppsModule } from './modules/apps.js';
+import { registerLogsModule } from './modules/logs.js';
 import { registerPreviewModule } from './modules/preview.js';
 import { initPreviewKey } from './preview/auth.js';
 import { startDevJanitor, stopAllDev } from './preview/dev.js';
@@ -43,6 +44,7 @@ async function main(): Promise<void> {
   registerSitesModule();
   registerAppsModule();
   registerPreviewModule();
+  registerLogsModule();
   initPreviewKey(app.config.dataDir);
   startDevJanitor();
   await initClaudeModule();
