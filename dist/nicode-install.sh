@@ -1621,7 +1621,8 @@ cmd_update() {
   need_root
   if [[ -n "${NICODE_INSTALLER_URL:-}" ]] && ! grep -q '^exec bash' "$INSTALLER" 2>/dev/null; then
     echo "Fetching latest installer…"
-    curl -fsSL "$NICODE_INSTALLER_URL" -o "$INSTALLER.new" && mv -f "$INSTALLER.new" "$INSTALLER" && chmod 755 "$INSTALLER"
+    # Cache-buster: raw.githubusercontent.com caches files for ~5 min, which would hand back the old installer.
+    curl -fsSL -H "Cache-Control: no-cache" "${NICODE_INSTALLER_URL}?t=$(date +%s)" -o "$INSTALLER.new" && mv -f "$INSTALLER.new" "$INSTALLER" && chmod 755 "$INSTALLER"
   fi
   echo "Updating Claude Code…"
   as_user 'claude update' || true
@@ -1835,7 +1836,7 @@ install_cli() {
         cp -f "${BASH_SOURCE[0]}" /usr/local/lib/nicode/nicode-install.sh
       fi
     elif [[ -n "${NICODE_INSTALLER_URL:-}" ]]; then
-      curl -fsSL "$NICODE_INSTALLER_URL" -o /usr/local/lib/nicode/nicode-install.sh || true
+      curl -fsSL -H "Cache-Control: no-cache" "${NICODE_INSTALLER_URL}?t=$(date +%s)" -o /usr/local/lib/nicode/nicode-install.sh || true
     fi
   else
     # Running from a source checkout: point at it so edits are picked up (development).
