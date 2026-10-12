@@ -38,6 +38,8 @@ Options
                          logged in to Claude, including root — else "dev")
   --no-root              Never reuse root; create/use a separate developer user
   --projects-root DIR    Folder holding your repos (default: auto-detected, else ~/projects)
+  --host-mode M          fresh | existing (default: auto). existing = add niCode only; no apt upgrade,
+                         SSH/firewall/swap/system-Node changes
   --device-name NAME     Name for the device token supplied with --token (shown in `nicode token list`)
   --port N               Daemon port on localhost (default: first free from 7878)
   --repo URL --ref REF   Where to fetch niCode from (default: settings / built-in)
@@ -72,6 +74,7 @@ while (($#)); do
     --no-root)       NI_ARGS[NICODE_NO_ROOT]=1 ;;
     --projects-root) NI_ARGS[NICODE_PROJECTS_ROOT]="$2"; shift ;;
     --device-name)   NI_ARGS[NICODE_DEVICE_NAME]="$2"; shift ;;
+    --host-mode)     NI_ARGS[NICODE_HOST_MODE]="$2"; shift ;;
     --port)          NI_ARGS[NICODE_PORT]="$2"; shift ;;
     --repo)          NI_ARGS[NICODE_REPO]="$2"; shift ;;
     --ref)           NI_ARGS[NICODE_REF]="$2"; shift ;;
@@ -125,7 +128,6 @@ else
   [[ $EUID -eq 0 ]] || { echo "Run as root: sudo bash $0 $*" >&2; exit 1; }
   NI_PROFILE_FILE="$NI_STATE_DIR/profile.env"
 fi
-: >"$NI_PROFILE_FILE" 2>/dev/null || true
 
 # Installs /usr/local/bin/nicode and a stable copy of this installer for `nicode update/doctor`.
 install_cli() {
@@ -146,7 +148,8 @@ install_cli() {
 }
 
 # ── Run ──────────────────────────────────────────────────────────────────────
-state_init
+state_init            # creates /var/lib/nicode before anything writes there
+: >"$NI_PROFILE_FILE"
 [[ -z "${NI_DRY_RUN:-}" ]] && install_cli
 status_init
 

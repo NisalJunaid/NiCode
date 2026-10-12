@@ -24,21 +24,29 @@ step_detect() {
 
 # ───── lib/01-system.sh ─────
 # Step 1 — OS packages, swap, automatic security updates.
+# On an "existing" host (see _detect_host_mode) only missing packages are installed:
+# no full upgrade, no swap/sysctl changes, no auto-update policy changes.
 
 # Waits up to 10 min for cloud-init / unattended-upgrades to release the dpkg lock.
 NI_APT=(apt-get -y -o DPkg::Lock::Timeout=600 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
 
 step_system() {
   export DEBIAN_FRONTEND=noninteractive
+  # Ubuntu 22.04's needrestart otherwise asks which services to restart (hangs unattended runs)
+  # or restarts them itself. List only — never restart someone's services.
+  export NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1
   local done_parts=()
 
   run_logged "${NI_APT[@]}" update
-  run_logged "${NI_APT[@]}" upgrade
-  done_parts+=("upgraded")
+
+  if [[ "$NI_HOST_MODE" == fresh ]]; then
+    run_logged "${NI_APT[@]}" upgrade
+    done_parts+=("upgraded")
+  fi
 
   if [[ -n "$NI_MISSING_PKGS" ]]; then
     # shellcheck disable=SC2086  # intentional word splitting of the package list
-    run_logged "${NI_APT[@]}" install $NI_MISSING_PKGS
+    run_logged "${NI_APT[@]}" install --no-install-recommends $NI_MISSING_PKGS
     done_parts+=("installed: $NI_MISSING_PKGS")
     profile_set NI_MISSING_PKGS ""
   fi
@@ -48,7 +56,7 @@ step_system() {
     ln -sf "$(command -v fdfind)" /usr/local/bin/fd
   fi
 
-  if (( NI_SWAP_PLAN_MB > 0 )) && ! swapon --show=NAME --noheadings | grep -q .; then
+  if [[ "$NI_HOST_MODE" == fresh ]] && (( NI_SWAP_PLAN_MB > 0 )) && ! swapon --show=NAME --noheadings | grep -q .; then
     if [[ ! -f /swapfile ]]; then
       fallocate -l "${NI_SWAP_PLAN_MB}M" /swapfile || dd if=/dev/zero of=/swapfile bs=1M count="$NI_SWAP_PLAN_MB" status=none
       chmod 600 /swapfile
@@ -62,13 +70,14 @@ step_system() {
     profile_set NI_SWAP_PLAN_MB 0
   fi
 
-  if [[ "$NI_PLATFORM" != wsl && "$NI_PLATFORM" != container ]]; then
+  if [[ "$NI_HOST_MODE" == fresh && "$NI_PLATFORM" != wsl && "$NI_PLATFORM" != container ]]; then
     cat >/etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 EOF
   fi
 
+  (( ${#done_parts[@]} )) || done_parts+=("nothing to change")
   step_detail "$(IFS=';'; echo "${done_parts[*]}")"
 }
 
@@ -130,12 +139,18 @@ step_user() {
 }
 
 # ───── lib/03-harden.sh ─────
-# Step 3 — SSH lockdown, firewall, fail2ban. Never locks you out: password auth is only
-# disabled when a key-based login path is confirmed to exist.
+# Step 3 — SSH lockdown, firewall, fail2ban.
+#   fresh host    : key-only SSH (only if a key login is confirmed), ufw 22/80/443, fail2ban.
+#   existing host : SSH and fail2ban untouched; an ACTIVE ufw just gets 80/443 opened;
+#                   an inactive ufw stays off (enabling it could cut off other services).
 
 step_harden() {
   if [[ "$NI_PLATFORM" == wsl || "$NI_PLATFORM" == container ]]; then
     step_detail "not applicable on $NI_PLATFORM"; return 2
+  fi
+  if [[ "$NI_HOST_MODE" == existing ]]; then
+    _harden_existing
+    return
   fi
   local notes=()
 
@@ -168,6 +183,9 @@ step_harden() {
     ufw allow 80/tcp >>"$NI_LOG_FILE" 2>&1
     ufw allow 443/tcp >>"$NI_LOG_FILE" 2>&1
   fi
+  # Belt and braces: keep anything else that is already listening publicly reachable.
+  local p
+  for p in $NI_OTHER_PORTS; do ufw allow "$p/tcp" >>"$NI_LOG_FILE" 2>&1; done
   ufw --force enable >>"$NI_LOG_FILE" 2>&1
   profile_set NI_UFW_ACTIVE 1
   notes+=("ufw on")
@@ -175,6 +193,17 @@ step_harden() {
   systemctl enable --now fail2ban >>"$NI_LOG_FILE" 2>&1 && notes+=("fail2ban on")
 
   step_detail "$(IFS=';'; echo "${notes[*]}")"
+}
+
+_harden_existing() {
+  if (( NI_UFW_ACTIVE )) && [[ "$NICODE_TRANSPORT" == https ]]; then
+    ufw allow 80/tcp >>"$NI_LOG_FILE" 2>&1
+    ufw allow 443/tcp >>"$NI_LOG_FILE" 2>&1
+    step_detail "existing server: SSH untouched; opened 80/443 in your active ufw"
+    return 0
+  fi
+  step_detail "existing server: SSH and firewall left as they are"
+  return 2
 }
 
 # ───── lib/04-edge.sh ─────
@@ -286,17 +315,51 @@ _edge_tailscale() {
 }
 
 # ───── lib/05-node.sh ─────
-# Step 5 — Node.js 22 LTS, system-wide so the systemd unit has a stable /usr/bin/node.
+# Step 5 — Node.js for the daemon (needs >= 20).
+#   An existing Node 20+ is reused as-is.
+#   fresh host    : Node 22 LTS system-wide via NodeSource.
+#   existing host : a private Node 22 in /opt/nicode/node — the system Node your apps use
+#                   (if any) is never replaced or upgraded.
+
+NI_PRIVATE_NODE_DIR=/opt/nicode/node
 
 step_node() {
-  if (( NI_NODE_OK )); then step_detail "v$NI_NODE_VERSION already installed"; return 2; fi
+  if (( NI_NODE_OK )); then
+    step_detail "using existing Node v$NI_NODE_VERSION ($NI_NODE_BIN)"
+    return 2
+  fi
+  if [[ "$NI_HOST_MODE" == existing ]]; then
+    _node_private
+    return
+  fi
   curl -fsSL https://deb.nodesource.com/setup_22.x -o "$NI_TMP/nodesource.sh"
   run_logged bash "$NI_TMP/nodesource.sh"
   run_logged "${NI_APT[@]}" install nodejs
   local v; v="$(node -v | tr -d v)"
   profile_set NI_NODE_VERSION "$v"
+  profile_set NI_NODE_BIN "$(command -v node)"
   profile_set NI_NODE_OK 1
   step_detail "v$v"
+}
+
+_node_private() {
+  local arch=x64 ver tarball
+  [[ "$NI_ARCH" == arm64 ]] && arch=arm64
+  # Latest 22.x from the official index.
+  ver="$(curl -fsSL https://nodejs.org/dist/latest-v22.x/SHASUMS256.txt | grep -oE "node-v22\.[0-9]+\.[0-9]+-linux-${arch}\.tar\.xz" | head -n1)"
+  [[ -n "$ver" ]] || { step_detail "could not resolve the latest Node 22 build"; return 1; }
+  tarball="$NI_TMP/$ver"
+  curl -fsSL "https://nodejs.org/dist/latest-v22.x/$ver" -o "$tarball"
+  (cd "$NI_TMP" && curl -fsSL https://nodejs.org/dist/latest-v22.x/SHASUMS256.txt | grep " $ver\$" | sha256sum -c - >>"$NI_LOG_FILE" 2>&1) \
+    || { step_detail "Node download failed checksum"; return 1; }
+  rm -rf "$NI_PRIVATE_NODE_DIR"
+  install -d "$NI_PRIVATE_NODE_DIR"
+  tar -xJf "$tarball" -C "$NI_PRIVATE_NODE_DIR" --strip-components=1
+  local v; v="$("$NI_PRIVATE_NODE_DIR/bin/node" -v | tr -d v)"
+  profile_set NI_NODE_VERSION "$v"
+  profile_set NI_NODE_BIN "$NI_PRIVATE_NODE_DIR/bin/node"
+  profile_set NI_NODE_OK 1
+  step_detail "private Node v$v in $NI_PRIVATE_NODE_DIR (system Node untouched)"
 }
 
 # ───── lib/06-claude.sh ─────
@@ -305,22 +368,22 @@ step_node() {
 
 step_claude() {
   local notes=()
-  if [[ -z "$NI_CLAUDE_BIN" ]]; then
+  local bin="$NI_CLAUDE_BIN" ver
+  if [[ -z "$bin" ]]; then
     # Native installer (self-updating, lives in ~/.local/bin). Optional pinned version.
     if ! as_user "curl -fsSL https://claude.ai/install.sh | bash -s -- ${NICODE_CLAUDE_VERSION:-}"; then
       log_warn "Native Claude installer failed; falling back to npm."
       run_logged npm install -g "@anthropic-ai/claude-code${NICODE_CLAUDE_VERSION:+@$NICODE_CLAUDE_VERSION}"
     fi
     notes+=("installed")
+    # Make sure ~/.local/bin is on PATH for login shells (tmux, daemon-spawned shells).
+    as_user 'grep -q "HOME/.local/bin" ~/.profile 2>/dev/null || echo '"'"'export PATH="$HOME/.local/bin:$PATH"'"'"' >> ~/.profile'
+    bin="$(_find_claude_bin "$NI_USER_HOME")"
+  else
+    notes+=("found $bin")
   fi
-
-  # Make sure ~/.local/bin is on PATH for login shells (tmux, daemon-spawned shells).
-  as_user 'grep -q "HOME/.local/bin" ~/.profile 2>/dev/null || echo '"'"'export PATH="$HOME/.local/bin:$PATH"'"'"' >> ~/.profile'
-
-  local bin ver
-  bin="$(as_user_capture 'command -v claude || ls ~/.local/bin/claude 2>/dev/null' | head -n1)"
   [[ -n "$bin" ]] || { step_detail "claude binary not found after install"; return 1; }
-  ver="$(as_user_capture "$bin --version" | head -n1)"
+  ver="$(as_user_capture "$(printf '%q' "$bin") --version" | head -n1)"
   profile_set NI_CLAUDE_BIN "$bin"
   profile_set NI_CLAUDE_VERSION "$ver"
 
@@ -328,7 +391,7 @@ step_claude() {
   local envf="$NI_USER_HOME/.config/nicode/env"
   if [[ ! -f "$envf" ]]; then
     printf '# niCode daemon environment. CLAUDE_CODE_OAUTH_TOKEN is written by the app login or `nicode login`.\n' >"$envf"
-    chown "$NI_USER:$NI_USER" "$envf"
+    chown "$NI_USER:" "$envf"
     chmod 600 "$envf"
   fi
 
@@ -396,7 +459,8 @@ step_daemon() {
   fi
 
   # 2. Build.
-  as_user "cd '$src/server' && npm ci --no-audit --no-fund && npm run build"
+  # Build with the Node chosen in the node step (may be a private one in /opt/nicode/node).
+  as_user "export PATH='$(dirname "$NI_NODE_BIN")':\$PATH; cd '$src/server' && npm ci --no-audit --no-fund && npm run build"
 
   # 3. Config. One hashed token per paired device (`nicode token add/list/revoke`).
   #    Existing devices are kept; an app-supplied token is added; a first install with no
@@ -667,11 +731,13 @@ _user_cmd() {
 _detect_tools() {
   NI_NODE_VERSION="$( { node -v 2>/dev/null || true; } | tr -d v)"
   NI_NODE_OK=0
-  [[ -n "$NI_NODE_VERSION" ]] && (( ${NI_NODE_VERSION%%.*} >= 22 )) && NI_NODE_OK=1
+  # The daemon supports Node >= 20, so an existing Node 20+ is reused rather than replaced.
+  [[ -n "$NI_NODE_VERSION" ]] && (( ${NI_NODE_VERSION%%.*} >= 20 )) && NI_NODE_OK=1
+  NI_NODE_BIN="$(command -v node 2>/dev/null || true)"
 
-  NI_CLAUDE_BIN="$(_user_cmd 'command -v claude')"
+  NI_CLAUDE_BIN="$(_find_claude_bin "$NI_USER_HOME")"
   NI_CLAUDE_VERSION=""
-  [[ -n "$NI_CLAUDE_BIN" ]] && NI_CLAUDE_VERSION="$(_user_cmd 'claude --version' | head -n1)"
+  [[ -n "$NI_CLAUDE_BIN" ]] && NI_CLAUDE_VERSION="$(_user_cmd "$(printf '%q' "$NI_CLAUDE_BIN") --version" | head -n1)"
   NI_CLAUDE_AUTHED=0
   if _home_claude_authed "$NI_USER_HOME"; then NI_CLAUDE_AUTHED=1; fi
 
@@ -716,6 +782,46 @@ _detect_web_server() {
   return 0
 }
 
+# Public TCP listeners other than SSH/HTTP(S) (game servers, databases, apps…).
+# A firewall that only allows 22/80/443 would cut these off.
+_detect_other_ports() {
+  NI_OTHER_PORTS="$( { ss -ltnH 2>/dev/null || true; } | awk '{print $4}' \
+    | { grep -vE '^(127\.|\[::1\]|::1)' || true; } | sed -E 's/.*:([0-9]+)$/\1/' \
+    | { grep -vxE '22|80|443|53' || true; } | sort -un | tr '\n' ' ')"
+  NI_OTHER_PORTS="${NI_OTHER_PORTS% }"
+  return 0
+}
+
+# "existing" = this machine already does real work. In that mode the installer only adds
+# niCode and changes nothing shared: no apt upgrade, no SSH/firewall changes, no system Node swap.
+_detect_host_mode() {
+  NI_HOST_MODE=fresh; NI_HOST_MODE_WHY=""
+  local why=()
+  [[ "$NI_WEB_SERVER" != none ]] && why+=("web server: ${NI_WEB_SERVER#other:}")
+  [[ -n "$NI_OTHER_PORTS" ]] && why+=("services on ports $NI_OTHER_PORTS")
+  (( ${NI_PROJECTS_FOUND:-0} > 0 )) && why+=("${NI_PROJECTS_FOUND} git repos")
+  (( NI_CLAUDE_AUTHED )) && why+=("Claude already set up")
+  if [[ -n "${NICODE_HOST_MODE:-}" ]]; then
+    NI_HOST_MODE="$NICODE_HOST_MODE"; NI_HOST_MODE_WHY="set by --host-mode"
+  elif (( ${#why[@]} )); then
+    NI_HOST_MODE=existing; NI_HOST_MODE_WHY="$(IFS=','; echo "${why[*]}")"
+  fi
+  return 0
+}
+
+# Finds the claude binary even when it lives somewhere a non-interactive login shell
+# doesn't put on PATH (npm global under nvm, ~/.claude/local, bun…).
+_find_claude_bin() {
+  local home="$1" c
+  c="$(_user_cmd 'command -v claude')"
+  [[ -n "$c" ]] && { echo "$c"; return; }
+  for c in "$home/.local/bin/claude" "$home/.claude/local/claude" "$home/.npm-global/bin/claude" \
+           "$home/.bun/bin/claude" /usr/local/bin/claude /usr/bin/claude "$home"/.nvm/versions/node/*/bin/claude; do
+    [[ -x "$c" ]] && { echo "$c"; return; }
+  done
+  return 0
+}
+
 _detect_port() {
   local cfg="$NI_USER_HOME/.config/nicode/config.json" p
   if [[ -n "${NICODE_PORT:-}" ]]; then NI_PORT="$NICODE_PORT"; return; fi
@@ -741,7 +847,7 @@ NI_PROFILE_VARS=(
   NI_CLAUDE_BIN NI_CLAUDE_VERSION NI_CLAUDE_AUTHED
   NI_GH_INSTALLED NI_GH_AUTHED NI_GIT_NAME NI_GIT_EMAIL
   NI_CADDY_INSTALLED NI_TAILSCALE_UP NI_UFW_ACTIVE NI_SSHD_PASSWORD_AUTH NI_DAEMON_INSTALLED
-  NI_WEB_SERVER NI_EDGE
+  NI_WEB_SERVER NI_EDGE NI_OTHER_PORTS NI_HOST_MODE NI_HOST_MODE_WHY NI_NODE_BIN
   NI_PORT
 )
 
@@ -756,6 +862,8 @@ detect_all() {
   _detect_tools
   _detect_port
   _detect_web_server
+  _detect_other_ports
+  _detect_host_mode
   local v
   {
     echo "# niCode host profile — generated $(date -u +%FT%TZ) by detect.sh"
@@ -765,50 +873,70 @@ detect_all() {
 
 # Human-readable "found / will do" text for the review screen and `nicode doctor`.
 detect_plan_text() {
-  local yes="✔" todo="➜" na="–" s
+  local yes="✔" todo="➜" na="–" s line existing=0
+  [[ "$NI_HOST_MODE" == existing ]] && existing=1
   printf 'FOUND\n'
   printf '  Host       %s (%s), %s %s, %s\n' "$NI_HOSTNAME" "$NI_PLATFORM${NI_REGION:+ $NI_REGION}" "$NI_OS_ID" "$NI_OS_VERSION" "$NI_ARCH"
+  printf '  Mode       %s\n' "$( (( existing )) && echo "EXISTING server ($NI_HOST_MODE_WHY): only adds niCode, changes nothing shared" || echo "fresh server: full setup")"
   printf '  Resources  %s vCPU, %s MB RAM, %s MB swap, %s GB free disk\n' "$NI_CPUS" "$NI_RAM_MB" "$NI_SWAP_MB" "$NI_DISK_FREE_GB"
   printf '  Address    %s → %s (%s)\n' "${NI_PUBLIC_IP:-${NI_LAN_IP:-?}}" "${NI_PUBLIC_HOST:-?}" "$NICODE_TRANSPORT"
+  printf '  Web server %s%s\n' "${NI_WEB_SERVER#other:}" "$( [[ -n "$NI_OTHER_PORTS" ]] && echo "; other public ports: $NI_OTHER_PORTS" || true)"
   printf '  User       %s (%s)\n' "$NI_USER" "$NI_USER_SOURCE"
   printf '  Projects   %s%s\n' "$NI_PROJECTS_ROOT" "$( (( ${NI_PROJECTS_FOUND:-0} )) && echo " (${NI_PROJECTS_FOUND} git repos found)" || true)"
-  printf '  Node       %s\n' "${NI_NODE_VERSION:-not installed}"
-  printf '  Claude     %s%s\n' "${NI_CLAUDE_VERSION:-not installed}" "$( (( NI_CLAUDE_AUTHED )) && echo ', logged in' || true)"
+  if [[ -n "$NI_NODE_VERSION" ]]; then printf '  Node       v%s (%s)\n' "$NI_NODE_VERSION" "$NI_NODE_BIN"
+  else printf '  Node       not installed\n'; fi
+  printf '  Claude     %s%s\n' "${NI_CLAUDE_VERSION:-not installed}${NI_CLAUDE_BIN:+ ($NI_CLAUDE_BIN)}" "$( (( NI_CLAUDE_AUTHED )) && echo ', logged in' || true)"
   printf '  GitHub CLI %s\n' "$( (( NI_GH_AUTHED )) && echo 'logged in' || { (( NI_GH_INSTALLED )) && echo 'installed' || echo 'not installed'; })"
   printf '\nPLAN  (stage: %s)\n' "$NICODE_STAGE"
   for s in $(steps_selected); do
     [[ "$s" == detect ]] && continue
+    line=""
     case "$s" in
-      system)  [[ -z "$NI_MISSING_PKGS" && "$NI_SWAP_PLAN_MB" == 0 ]] && printf '  %s %-26s nothing missing\n' "$yes" "${NI_STEP_TITLE[$s]}" \
-                 || printf '  %s %-26s install: %s%s\n' "$todo" "${NI_STEP_TITLE[$s]}" "${NI_MISSING_PKGS:-–}" "$( (( NI_SWAP_PLAN_MB )) && echo "; ${NI_SWAP_PLAN_MB} MB swap" || true)" ;;
-      user)    (( NI_USER_EXISTS )) && printf '  %s %-26s reuse %s\n' "$yes" "${NI_STEP_TITLE[$s]}" "$NI_USER" \
-                 || printf '  %s %-26s create %s%s\n' "$todo" "${NI_STEP_TITLE[$s]}" "$NI_USER" "$( (( NI_ROOT_HAS_KEYS )) && echo ' (copy root SSH keys)' || true)" ;;
-      harden)  [[ "$NI_PLATFORM" == wsl || "$NI_PLATFORM" == container ]] && printf '  %s %-26s not applicable (%s)\n' "$na" "${NI_STEP_TITLE[$s]}" "$NI_PLATFORM" \
-                 || printf '  %s %-26s key-only SSH, ufw 22/80/443, fail2ban\n' "$todo" "${NI_STEP_TITLE[$s]}" ;;
-      edge)    case "$NICODE_TRANSPORT" in
-                 https) case "$NI_EDGE" in
-                          nginx)    printf '  %s %-26s add a site to your existing nginx + certbot for %s\n' "$todo" "${NI_STEP_TITLE[$s]}" "$NI_PUBLIC_HOST" ;;
-                          conflict) printf '  ✗ %-26s ports 80/443 are used by %s: rerun with --transport tailscale (docs/01)\n' "${NI_STEP_TITLE[$s]}" "${NI_WEB_SERVER#other:}" ;;
-                          *)        printf '  %s %-26s Caddy + Let'"'"'s Encrypt for %s\n' "$todo" "${NI_STEP_TITLE[$s]}" "$NI_PUBLIC_HOST" ;;
-                        esac ;;
-                 tailscale) printf '  %s %-26s Tailscale (no public port)\n' "$todo" "${NI_STEP_TITLE[$s]}" ;;
-                 local) printf '  %s %-26s local dev: plain ws:// on %s\n' "$na" "${NI_STEP_TITLE[$s]}" "$NI_PUBLIC_HOST" ;;
-               esac ;;
-      node)    (( NI_NODE_OK )) && printf '  %s %-26s %s already OK\n' "$yes" "${NI_STEP_TITLE[$s]}" "$NI_NODE_VERSION" \
-                 || printf '  %s %-26s install Node 22 LTS\n' "$todo" "${NI_STEP_TITLE[$s]}" ;;
-      claude)  [[ -n "$NI_CLAUDE_BIN" ]] && printf '  %s %-26s installed%s\n' "$yes" "${NI_STEP_TITLE[$s]}" "$( (( NI_CLAUDE_AUTHED )) || echo ' — login from the app afterwards')" \
-                 || printf '  %s %-26s install for %s (login from the app afterwards)\n' "$todo" "${NI_STEP_TITLE[$s]}" "$NI_USER" ;;
-      git)     (( NI_GH_INSTALLED )) && printf '  %s %-26s gh present\n' "$yes" "${NI_STEP_TITLE[$s]}" \
-                 || printf '  %s %-26s install GitHub CLI, git defaults\n' "$todo" "${NI_STEP_TITLE[$s]}" ;;
-      daemon)  printf '  %s %-26s build & run on 127.0.0.1:%s\n' "$todo" "${NI_STEP_TITLE[$s]}" "$NI_PORT" ;;
-      finish)  printf '  %s %-26s summary%s\n' "$todo" "${NI_STEP_TITLE[$s]}" "$( [[ "$NICODE_STAGE" == full ]] && echo ' + pairing QR' || true)" ;;
+      system)
+        if (( existing )); then
+          if [[ -n "$NI_MISSING_PKGS" ]]; then line="$todo|install only: $NI_MISSING_PKGS (no upgrade, no swap)"
+          else line="$yes|nothing missing (no upgrade, no swap)"; fi
+        else
+          if [[ -z "$NI_MISSING_PKGS" && "$NI_SWAP_PLAN_MB" == 0 ]]; then line="$yes|upgrade only, nothing missing"
+          else line="$todo|upgrade; install: ${NI_MISSING_PKGS:-–}$( (( NI_SWAP_PLAN_MB )) && echo "; ${NI_SWAP_PLAN_MB} MB swap" || true)"; fi
+        fi ;;
+      user)
+        if (( NI_USER_EXISTS )); then line="$yes|reuse $NI_USER"
+        else line="$todo|create $NI_USER$( (( NI_ROOT_HAS_KEYS )) && echo ' (copy root SSH keys)' || true)"; fi ;;
+      harden)
+        if [[ "$NI_PLATFORM" == wsl || "$NI_PLATFORM" == container ]]; then line="$na|not applicable ($NI_PLATFORM)"
+        elif (( existing )); then
+          if (( NI_UFW_ACTIVE )) && [[ "$NICODE_TRANSPORT" == https ]]; then line="$todo|SSH untouched; open 80/443 in your active ufw"
+          else line="$na|SSH and firewall left as they are"; fi
+        else line="$todo|key-only SSH, ufw 22/80/443${NI_OTHER_PORTS:+ + $NI_OTHER_PORTS}, fail2ban"; fi ;;
+      edge)
+        case "$NICODE_TRANSPORT" in
+          https)
+            case "$NI_EDGE" in
+              nginx)    line="$todo|add one site to your existing nginx + certbot for $NI_PUBLIC_HOST" ;;
+              conflict) line="✗|ports 80/443 are used by ${NI_WEB_SERVER#other:}: rerun with --transport tailscale (docs/01)" ;;
+              *)        line="$todo|Caddy + Let's Encrypt for $NI_PUBLIC_HOST" ;;
+            esac ;;
+          tailscale) line="$todo|Tailscale (no public port)" ;;
+          local)     line="$na|local dev: plain ws:// on $NI_PUBLIC_HOST" ;;
+        esac ;;
+      node)
+        if (( NI_NODE_OK )); then line="$yes|use existing v$NI_NODE_VERSION"
+        elif (( existing )); then line="$todo|private Node 22 in /opt/nicode/node (system Node untouched)"
+        else line="$todo|install Node 22 LTS"; fi ;;
+      claude)
+        if [[ -n "$NI_CLAUDE_BIN" ]]; then line="$yes|use existing$( (( NI_CLAUDE_AUTHED )) && echo ' (logged in — no login needed)' || echo ' (login from the app afterwards)')"
+        else line="$todo|install for $NI_USER$( (( NI_CLAUDE_AUTHED )) && echo ' (existing login reused)' || echo ' (login from the app afterwards)')"; fi ;;
+      git)
+        if (( NI_GH_INSTALLED )); then line="$yes|gh present"; else line="$todo|install GitHub CLI, git defaults"; fi ;;
+      daemon) line="$todo|build & run on 127.0.0.1:$NI_PORT" ;;
+      finish) line="$todo|summary$( [[ "$NICODE_STAGE" == full ]] && echo ' + pairing QR' || true)" ;;
     esac
+    printf '  %s %-26s %s\n' "${line%%|*}" "${NI_STEP_TITLE[$s]}" "${line#*|}"
   done
   if (( NI_RAM_MB > 0 && NI_RAM_MB < 1900 )); then printf '\n  ⚠ Less than 2 GB RAM: Claude Code + builds may be slow.\n'; fi
   if (( NI_DISK_FREE_GB > 0 && NI_DISK_FREE_GB < 10 )); then printf '  ⚠ Less than 10 GB free disk.\n'; fi
-  if [[ "$NI_USER" == root ]]; then printf '
-  ⚠ Runs as root to reuse your existing Claude login and files. Use --no-root for a separate "dev" user.
-'; fi
+  if [[ "$NI_USER" == root ]]; then printf '\n  ⚠ Runs as root to reuse your existing Claude login and files. Use --no-root for a separate "dev" user.\n'; fi
   if [[ "$NICODE_TRANSPORT" == local ]]; then printf '\n  ℹ Local transport: no TLS. Use only on a trusted LAN / for development.\n'; fi
   return 0
 }
@@ -828,7 +956,7 @@ declare -A NI_STEP_TITLE=(
   [user]="Developer user"
   [harden]="SSH & firewall hardening"
   [edge]="HTTPS endpoint"
-  [node]="Node.js 22"
+  [node]="Node.js"
   [claude]="Claude Code"
   [git]="Git & GitHub CLI"
   [daemon]="niCode daemon"
@@ -1119,8 +1247,9 @@ EOF
 
 # tmpl_systemd_unit <source dir> <config path>
 tmpl_systemd_unit() {
-  local h="$NI_USER_HOME" node_bin
-  node_bin="$(command -v node || echo /usr/bin/node)"
+  local h="$NI_USER_HOME" node_bin claude_dir
+  node_bin="${NI_NODE_BIN:-$(command -v node || echo /usr/bin/node)}"
+  claude_dir="$(dirname "${NI_CLAUDE_BIN:-$h/.local/bin/claude}")"
   cat <<EOF
 # Managed by niCode installer.
 [Unit]
@@ -1136,7 +1265,7 @@ WorkingDirectory=$1/server
 Environment=NODE_ENV=production
 Environment=HOME=${h}
 Environment=NICODE_CONFIG=$2
-Environment=PATH=${h}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PATH=${claude_dir}:$(dirname "$node_bin"):${h}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EnvironmentFile=-${h}/.config/nicode/env
 # node <dir> runs package.json "main" (dist/server/src/index.js, see docs/02).
 ExecStart=${node_bin} $1/server
@@ -1245,10 +1374,27 @@ ui_prompt() {
 }
 
 # run_logged <cmd...> — runs a command, appending stdout/stderr to the log file.
+# On a terminal it shows a live one-line ticker (elapsed time + last log line) so long
+# apt/npm runs never look frozen.
 run_logged() {
   if [[ -n "${NI_DRY_RUN:-}" ]]; then log_dim "[dry-run] $*"; return 0; fi
   _log_to_file "RUN   $*"
-  "$@" >>"$NI_LOG_FILE" 2>&1
+  if [[ ! -t 1 ]]; then
+    "$@" >>"$NI_LOG_FILE" 2>&1
+    return
+  fi
+  "$@" >>"$NI_LOG_FILE" 2>&1 &
+  local pid=$! rc=0 start=$SECONDS cols last
+  cols=$(( $(tput cols 2>/dev/null || echo 100) - 16 ))
+  (( cols < 20 )) && cols=20
+  while kill -0 "$pid" 2>/dev/null; do
+    last="$(tail -n 1 "$NI_LOG_FILE" 2>/dev/null | tr -d '\r' | cut -c1-"$cols")"
+    printf '\r\e[K%s    %4ss  %s%s' "$C_DIM" "$(( SECONDS - start ))" "$last" "$C_RESET"
+    sleep 1
+  done
+  wait "$pid" || rc=$?
+  printf '\r\e[K'
+  return "$rc"
 }
 
 # as_user <cmd string> — run a login shell command as the target user.
@@ -1568,6 +1714,8 @@ Options
                          logged in to Claude, including root — else "dev")
   --no-root              Never reuse root; create/use a separate developer user
   --projects-root DIR    Folder holding your repos (default: auto-detected, else ~/projects)
+  --host-mode M          fresh | existing (default: auto). existing = add niCode only; no apt upgrade,
+                         SSH/firewall/swap/system-Node changes
   --device-name NAME     Name for the device token supplied with --token (shown in `nicode token list`)
   --port N               Daemon port on localhost (default: first free from 7878)
   --repo URL --ref REF   Where to fetch niCode from (default: settings / built-in)
@@ -1602,6 +1750,7 @@ while (($#)); do
     --no-root)       NI_ARGS[NICODE_NO_ROOT]=1 ;;
     --projects-root) NI_ARGS[NICODE_PROJECTS_ROOT]="$2"; shift ;;
     --device-name)   NI_ARGS[NICODE_DEVICE_NAME]="$2"; shift ;;
+    --host-mode)     NI_ARGS[NICODE_HOST_MODE]="$2"; shift ;;
     --port)          NI_ARGS[NICODE_PORT]="$2"; shift ;;
     --repo)          NI_ARGS[NICODE_REPO]="$2"; shift ;;
     --ref)           NI_ARGS[NICODE_REF]="$2"; shift ;;
@@ -1655,7 +1804,6 @@ else
   [[ $EUID -eq 0 ]] || { echo "Run as root: sudo bash $0 $*" >&2; exit 1; }
   NI_PROFILE_FILE="$NI_STATE_DIR/profile.env"
 fi
-: >"$NI_PROFILE_FILE" 2>/dev/null || true
 
 # Installs /usr/local/bin/nicode and a stable copy of this installer for `nicode update/doctor`.
 install_cli() {
@@ -1676,7 +1824,8 @@ install_cli() {
 }
 
 # ── Run ──────────────────────────────────────────────────────────────────────
-state_init
+state_init            # creates /var/lib/nicode before anything writes there
+: >"$NI_PROFILE_FILE"
 [[ -z "${NI_DRY_RUN:-}" ]] && install_cli
 status_init
 

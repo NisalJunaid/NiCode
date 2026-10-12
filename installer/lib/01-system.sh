@@ -1,20 +1,28 @@
 # shellcheck shell=bash
 # Step 1 — OS packages, swap, automatic security updates.
+# On an "existing" host (see _detect_host_mode) only missing packages are installed:
+# no full upgrade, no swap/sysctl changes, no auto-update policy changes.
 
 # Waits up to 10 min for cloud-init / unattended-upgrades to release the dpkg lock.
 NI_APT=(apt-get -y -o DPkg::Lock::Timeout=600 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
 
 step_system() {
   export DEBIAN_FRONTEND=noninteractive
+  # Ubuntu 22.04's needrestart otherwise asks which services to restart (hangs unattended runs)
+  # or restarts them itself. List only — never restart someone's services.
+  export NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1
   local done_parts=()
 
   run_logged "${NI_APT[@]}" update
-  run_logged "${NI_APT[@]}" upgrade
-  done_parts+=("upgraded")
+
+  if [[ "$NI_HOST_MODE" == fresh ]]; then
+    run_logged "${NI_APT[@]}" upgrade
+    done_parts+=("upgraded")
+  fi
 
   if [[ -n "$NI_MISSING_PKGS" ]]; then
     # shellcheck disable=SC2086  # intentional word splitting of the package list
-    run_logged "${NI_APT[@]}" install $NI_MISSING_PKGS
+    run_logged "${NI_APT[@]}" install --no-install-recommends $NI_MISSING_PKGS
     done_parts+=("installed: $NI_MISSING_PKGS")
     profile_set NI_MISSING_PKGS ""
   fi
@@ -24,7 +32,7 @@ step_system() {
     ln -sf "$(command -v fdfind)" /usr/local/bin/fd
   fi
 
-  if (( NI_SWAP_PLAN_MB > 0 )) && ! swapon --show=NAME --noheadings | grep -q .; then
+  if [[ "$NI_HOST_MODE" == fresh ]] && (( NI_SWAP_PLAN_MB > 0 )) && ! swapon --show=NAME --noheadings | grep -q .; then
     if [[ ! -f /swapfile ]]; then
       fallocate -l "${NI_SWAP_PLAN_MB}M" /swapfile || dd if=/dev/zero of=/swapfile bs=1M count="$NI_SWAP_PLAN_MB" status=none
       chmod 600 /swapfile
@@ -38,12 +46,13 @@ step_system() {
     profile_set NI_SWAP_PLAN_MB 0
   fi
 
-  if [[ "$NI_PLATFORM" != wsl && "$NI_PLATFORM" != container ]]; then
+  if [[ "$NI_HOST_MODE" == fresh && "$NI_PLATFORM" != wsl && "$NI_PLATFORM" != container ]]; then
     cat >/etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 EOF
   fi
 
+  (( ${#done_parts[@]} )) || done_parts+=("nothing to change")
   step_detail "$(IFS=';'; echo "${done_parts[*]}")"
 }

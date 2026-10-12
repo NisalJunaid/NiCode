@@ -92,10 +92,27 @@ ui_prompt() {
 }
 
 # run_logged <cmd...> — runs a command, appending stdout/stderr to the log file.
+# On a terminal it shows a live one-line ticker (elapsed time + last log line) so long
+# apt/npm runs never look frozen.
 run_logged() {
   if [[ -n "${NI_DRY_RUN:-}" ]]; then log_dim "[dry-run] $*"; return 0; fi
   _log_to_file "RUN   $*"
-  "$@" >>"$NI_LOG_FILE" 2>&1
+  if [[ ! -t 1 ]]; then
+    "$@" >>"$NI_LOG_FILE" 2>&1
+    return
+  fi
+  "$@" >>"$NI_LOG_FILE" 2>&1 &
+  local pid=$! rc=0 start=$SECONDS cols last
+  cols=$(( $(tput cols 2>/dev/null || echo 100) - 16 ))
+  (( cols < 20 )) && cols=20
+  while kill -0 "$pid" 2>/dev/null; do
+    last="$(tail -n 1 "$NI_LOG_FILE" 2>/dev/null | tr -d '\r' | cut -c1-"$cols")"
+    printf '\r\e[K%s    %4ss  %s%s' "$C_DIM" "$(( SECONDS - start ))" "$last" "$C_RESET"
+    sleep 1
+  done
+  wait "$pid" || rc=$?
+  printf '\r\e[K'
+  return "$rc"
 }
 
 # as_user <cmd string> — run a login shell command as the target user.

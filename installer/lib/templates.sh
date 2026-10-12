@@ -113,8 +113,9 @@ EOF
 
 # tmpl_systemd_unit <source dir> <config path>
 tmpl_systemd_unit() {
-  local h="$NI_USER_HOME" node_bin
-  node_bin="$(command -v node || echo /usr/bin/node)"
+  local h="$NI_USER_HOME" node_bin claude_dir
+  node_bin="${NI_NODE_BIN:-$(command -v node || echo /usr/bin/node)}"
+  claude_dir="$(dirname "${NI_CLAUDE_BIN:-$h/.local/bin/claude}")"
   cat <<EOF
 # Managed by niCode installer.
 [Unit]
@@ -130,7 +131,7 @@ WorkingDirectory=$1/server
 Environment=NODE_ENV=production
 Environment=HOME=${h}
 Environment=NICODE_CONFIG=$2
-Environment=PATH=${h}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PATH=${claude_dir}:$(dirname "$node_bin"):${h}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EnvironmentFile=-${h}/.config/nicode/env
 # node <dir> runs package.json "main" (dist/server/src/index.js, see docs/02).
 ExecStart=${node_bin} $1/server

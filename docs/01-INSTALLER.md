@@ -27,6 +27,14 @@ curl -fsSL https://raw.githubusercontent.com/NisalJunaid/NiCode/main/dist/nicode
 sudo bash nicode-install.sh --dry-run     # check: User = the one logged in to Claude, Projects = your repos folder
 sudo bash nicode-install.sh               # Proceed → QR at the end → scan in the app (Pair with QR)
 ```
+The installer recognises an **existing server** (a web server, other public services such as game servers, git repos, or an existing Claude setup) and switches to **existing mode**. The plan shows `Mode  EXISTING server`. In that mode it **only adds niCode**:
+- no `apt upgrade`, and services are never restarted (needrestart is set to list-only)
+- no swap or sysctl changes
+- SSH config and fail2ban are untouched; an inactive firewall stays off, and an active ufw only gets 80/443 opened
+- your Node is reused if it's ≥ 20; otherwise niCode gets a private Node in `/opt/nicode/node`, and the system Node is never replaced
+
+Force either mode with `--host-mode fresh|existing`.
+
 What it does on an existing server:
 - **Reuses your setup.** It runs niCode as the user who is already logged in to Claude, including **root** (`--no-root` opts out), and points niCode at the folder holding your git repos (`--projects-root DIR` to choose another). Your Claude login (`claude` → `/login`) is used as-is, so the app shows **no login step**.
 - **Touches nothing that already works.** Installed packages, Node, Claude Code, gh, swap and firewall rules are detected and skipped. Password SSH login is only disabled when key login is confirmed for the user you log in with. If you rely on password SSH, run with `--skip harden`.

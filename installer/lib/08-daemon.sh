@@ -25,7 +25,8 @@ step_daemon() {
   fi
 
   # 2. Build.
-  as_user "cd '$src/server' && npm ci --no-audit --no-fund && npm run build"
+  # Build with the Node chosen in the node step (may be a private one in /opt/nicode/node).
+  as_user "export PATH='$(dirname "$NI_NODE_BIN")':\$PATH; cd '$src/server' && npm ci --no-audit --no-fund && npm run build"
 
   # 3. Config. One hashed token per paired device (`nicode token add/list/revoke`).
   #    Existing devices are kept; an app-supplied token is added; a first install with no
