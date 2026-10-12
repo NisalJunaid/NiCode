@@ -26,5 +26,5 @@ A phone-first remote IDE for AI-agent coding. An Expo app provisions a DigitalOc
 ## Commands
 - Installer: `bash installer/install.sh --dry-run --force` (safe anywhere, including Git Bash), `bash installer/build.sh`, and `shellcheck installer/install.sh installer/lib/*.sh installer/bin/nicode` (in WSL).
 - Protocol: `npx -p typescript tsc --noEmit --strict --target es2022 --module nodenext --moduleResolution nodenext protocol/types.ts`.
-- Server: `cd server && npm run dev | build | test` (WSL).
+- Server: `cd server && npm run build && npm test` (tests run the compiled daemon; work on Windows too, except the tmux/symlink parts), `npm run dev` for live reload.
 - App: `cd app && npx expo start --dev-client`, plus `npx expo run:android` after native dependency changes (Windows).

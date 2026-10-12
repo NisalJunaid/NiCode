@@ -11,7 +11,7 @@ Code with AI agents from your phone. niCode is a mobile alternative to VS Code R
 |---|---|
 | Server installer (`installer/`, `dist/nicode-install.sh`) | ✅ written; `--dry-run` tested |
 | Protocol (`protocol/types.ts`) | ✅ written |
-| Daemon (`server/`) | 📋 blueprint ready: [docs/02](docs/02-SERVER-BLUEPRINT.md) |
+| Daemon (`server/`) | ✅ v0.1.0 built; 21 tests passing on Windows, first droplet run pending ([docs/02](docs/02-SERVER-BLUEPRINT.md)) |
 | App (`app/`) | 📋 blueprint ready: [docs/04](docs/04-APP-BLUEPRINT.md) |
 
 ## Get started

@@ -2,7 +2,21 @@
 
 > **Audience:** Claude Code, building `server/` from scratch (run it in WSL; see [03](03-LOCAL-DEV-SETUP.md)). Read [00-OVERVIEW](00-OVERVIEW.md) and [05-PROTOCOL](05-PROTOCOL.md) first. The protocol types in [protocol/types.ts](../protocol/types.ts) are the contract. Import them; don't redefine them.
 
-## Kickoff prompt (paste into Claude Code at the repo root, inside WSL)
+## Implementation status (v0.1.0)
+`server/` implements M1–M7, plus the systemd and reverse-proxy wiring from M8. It is tested on Windows with `npm test`: unit tests, a real daemon over WebSocket, the permission bridge, and Claude sessions driven by `test/fake-claude.mjs`, a stand-in CLI that speaks stream-json. Terminals (tmux) and the symlink guard are only exercised on Linux. Where the code differs from the plan below:
+- **No `@modelcontextprotocol/sdk`, `expo-server-sdk` or `simple-git`.**
+  - The approve tool is a ~100-line stdio MCP server (`src/mcp/approve-server.ts`). It fails closed: anything unexpected becomes a deny.
+  - Push uses Expo's HTTP API directly.
+  - Git uses `execFile('git', …)`.
+- **CLI capability probe.** At startup the daemon parses `claude --help`.
+  - Protocol mode `default` is mapped to the CLI's own name for it (`manual` on CLI 2.1.x).
+  - The `auto` mode is exposed when the CLI supports it.
+  - `--session-id` and `--permission-prompts host` are only passed when the CLI lists them. `--permission-prompt-tool` is hidden from the help but accepted.
+- **Sessions keep two ids.** The daemon's own `sessionId`, which the app uses, and Claude's conversation id from the `init` event, which is used for `--resume`.
+- **Test hook.** `NICODE_TEST_CLAUDE_SHIM=<script>` makes the daemon run `node <script> …` instead of the real CLI.
+- **Browser test console.** `server/scripts/test-client.html`. Open the file locally, enter `wss://<host>/ws` and a device token.
+
+ (paste into Claude Code at the repo root, inside WSL)
 ```
 Read CLAUDE.md, docs/00-OVERVIEW.md, docs/02-SERVER-BLUEPRINT.md and docs/05-PROTOCOL.md.
 Build server/ milestone by milestone (M1 → M8) exactly as specified. After each milestone,

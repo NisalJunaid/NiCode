@@ -98,6 +98,8 @@ export interface ServerInfo {
   setup: { claude: boolean; github: boolean };
   /** False when the daemon runs as root (Claude Code refuses bypassPermissions there). */
   bypassAvailable: boolean;
+  /** Modes the installed Claude CLI supports (and the daemon allows). Show only these. */
+  permissionModes: PermissionMode[];
   /** The paired device this connection authenticated as. */
   device: DeviceInfo;
 }
@@ -153,7 +155,12 @@ export interface GitCommit {
   message: string;
 }
 
-export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
+/**
+ * 'default' = ask on the phone for anything risky. The daemon maps it to the CLI's own name
+ * ('default' on older CLIs, 'manual' on newer ones). 'auto' lets the CLI decide routine actions
+ * itself and only asks for risky ones (newer CLIs only).
+ */
+export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'auto' | 'bypassPermissions';
 
 export interface ClaudeSessionSummary {
   sessionId: string;
@@ -313,9 +320,9 @@ export function parsePairingUri(uri: string): PairingInfo | null {
   const m = /^nicode:\/\/pair\?(.*)$/.exec(uri);
   if (!m) return null;
   const q = new Map<string, string>();
-  for (const part of m[1].split('&')) {
-    const [k, v = ''] = part.split('=');
-    q.set(decodeURIComponent(k), decodeURIComponent(v));
+  for (const part of (m[1] ?? '').split('&')) {
+    const [k = '', v = ''] = part.split('=');
+    if (k) q.set(decodeURIComponent(k), decodeURIComponent(v));
   }
   const host = q.get('h');
   const token = q.get('t');

@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>niCode Test Console</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css">
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --line:#2a2f3a; --text:#e6e8ee; --dim:#8b93a7; --accent:#7aa2f7; --ok:#9ece6a; --bad:#f7768e; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, sans-serif; }
+  header { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:12px 16px; border-bottom:1px solid var(--line); background:var(--panel); }
+  header h1 { font-size:15px; margin:0 12px 0 0; }
+  input, select, textarea, button { font:inherit; color:var(--text); background:#0b0d11; border:1px solid var(--line); border-radius:6px; padding:6px 8px; }
+  button { cursor:pointer; background:#222838; }
+  button:hover { border-color:var(--accent); }
+  #url { width:min(420px, 100%); } #token { width:min(320px, 100%); }
+  #dot { width:10px; height:10px; border-radius:50%; background:var(--bad); display:inline-block; }
+  main { display:grid; grid-template-columns: 1fr 1fr; gap:12px; padding:12px 16px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; min-width:0; }
+  section h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:0 0 8px; }
+  .row { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
+  textarea { width:100%; min-height:90px; font-family:ui-monospace, monospace; font-size:12px; }
+  pre { margin:0; max-height:360px; overflow:auto; font:12px/1.4 ui-monospace, monospace; white-space:pre-wrap; word-break:break-word; }
+  #term { height:340px; }
+  .chat { max-height:420px; overflow:auto; display:flex; flex-direction:column; gap:6px; margin-bottom:8px; }
+  .msg { padding:6px 8px; border-radius:6px; background:#0b0d11; white-space:pre-wrap; word-break:break-word; font-size:13px; }
+  .msg.user { background:#1d2a44; align-self:flex-end; max-width:85%; }
+  .msg.tool { color:var(--dim); font-family:ui-monospace, monospace; font-size:12px; }
+  .perm { border:1px solid var(--accent); padding:8px; border-radius:6px; margin-bottom:8px; }
+  .dim { color:var(--dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>niCode test console</h1>
+  <span id="dot" title="disconnected"></span>
+  <input id="url" placeholder="wss://203-0-113-7.sslip.io/ws">
+  <input id="token" type="password" placeholder="device token">
+  <button id="connect">Connect</button>
+  <span id="who" class="dim"></span>
+</header>
+<main>
+  <section>
+    <h2>Requests</h2>
+    <div class="row">
+      <button data-m="server.info">server.info</button>
+      <button data-m="projects.list">projects.list</button>
+      <button data-m="claude.list">claude.list</button>
+      <button data-m="term.list">term.list</button>
+      <button data-m="auth.devices">auth.devices</button>
+      <button data-m="setup.status">setup.status</button>
+    </div>
+    <div class="row">
+      <input id="method" placeholder="method" value="fs.list">
+      <button id="send">Send</button>
+    </div>
+    <textarea id="params">{"projectPath": "", "dir": ""}</textarea>
+    <h2 style="margin-top:12px">Log</h2>
+    <pre id="log"></pre>
+  </section>
+
+  <section>
+    <h2>Claude</h2>
+    <div class="row">
+      <select id="project"><option value="">— pick a project (projects.list) —</option></select>
+      <select id="mode"></select>
+      <button id="stop">Stop</button>
+    </div>
+    <div id="perms"></div>
+    <div class="chat" id="chat"></div>
+    <div class="row">
+      <textarea id="prompt" placeholder="Ask Claude to do something in this project…" style="min-height:60px"></textarea>
+      <button id="ask">Send</button>
+    </div>
+    <div class="dim" id="sessionInfo"></div>
+  </section>
+
+  <section style="grid-column: 1 / -1">
+    <h2>Terminal (tmux)</h2>
+    <div class="row"><button id="openTerm">Open terminal in selected project</button><span class="dim" id="termInfo"></span></div>
+    <div id="term"></div>
+  </section>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const store = { get: (k) => { try { return localStorage.getItem(k) || ''; } catch { return ''; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+$('url').value = store.get('nicode.url');
+let ws, nextId = 1; const pending = new Map();
+let sessionId = null, termId = null;
+
+function log(obj, dir = '←') {
+  const line = `${dir} ${typeof obj === 'string' ? obj : JSON.stringify(obj)}\n`;
+  const el = $('log'); el.textContent = (line + el.textContent).slice(0, 60000);
+}
+function call(method, params = {}) {
+  return new Promise((resolve) => {
+    const id = nextId++; pending.set(id, resolve);
+    const frame = { id, method, params }; log(frame, '→'); ws.send(JSON.stringify(frame));
+  });
+}
+const b64 = { enc: (s) => btoa(String.fromCharCode(...new TextEncoder().encode(s))), dec: (b) => new TextDecoder().decode(Uint8Array.from(atob(b), (c) => c.charCodeAt(0))) };
+
+$('connect').onclick = () => {
+  const url = $('url').value.trim(), token = $('token').value.trim();
+  store.set('nicode.url', url);
+  ws?.close();
+  ws = new WebSocket(url, ['nicode', 'nicode.' + token]);
+  ws.onopen = async () => {
+    $('dot').style.background = 'var(--ok)';
+    const info = (await call('server.info')).result;
+    if (!info) return;
+    $('who').textContent = `${info.user}@${info.hostname} · ${info.claudeVersion ?? 'no claude'} · device "${info.device.name}" · claude login: ${info.setup.claude ? 'yes' : 'NO'}`;
+    $('mode').innerHTML = info.permissionModes.map((m) => `<option>${m}</option>`).join('');
+    const projects = (await call('projects.list')).result || [];
+    $('project').innerHTML = '<option value="">— pick a project —</option>' + projects.map((p) => `<option value="${p.path}">${p.name}${p.branch ? ' (' + p.branch + ')' : ''}</option>`).join('');
+  };
+  ws.onclose = (e) => { $('dot').style.background = 'var(--bad)'; log(`closed ${e.code} ${e.reason || ''}`); };
+  ws.onerror = () => log('connection error (wrong URL/token, or server down)');
+  ws.onmessage = (m) => {
+    const f = JSON.parse(m.data);
+    if ('id' in f) { pending.get(f.id)?.(f); pending.delete(f.id); log(f); return; }
+    onEvent(f);
+  };
+};
+
+document.querySelectorAll('[data-m]').forEach((b) => (b.onclick = () => call(b.dataset.m, b.dataset.m === 'claude.list' ? { projectPath: $('project').value || undefined } : {})));
+$('send').onclick = () => { let p = {}; try { p = JSON.parse($('params').value || '{}'); } catch { return log('params: invalid JSON'); } call($('method').value.trim(), p); };
+
+// ── Claude ──
+function addMsg(text, cls = '') { const d = document.createElement('div'); d.className = 'msg ' + cls; d.textContent = text; $('chat').appendChild(d); $('chat').scrollTop = 1e9; }
+$('ask').onclick = async () => {
+  const text = $('prompt').value.trim(); if (!text) return; $('prompt').value = '';
+  if (!sessionId) {
+    const projectPath = $('project').value; if (!projectPath) return alert('Pick a project first');
+    const r = await call('claude.start', { projectPath, prompt: text, permissionMode: $('mode').value });
+    if (r.error) return addMsg('Error: ' + r.error.message, 'tool');
+    sessionId = r.result.sessionId; $('sessionInfo').textContent = 'session ' + sessionId;
+  } else {
+    const r = await call('claude.send', { sessionId, text });
+    if (r.error) addMsg('Error: ' + r.error.message, 'tool');
+  }
+};
+$('stop').onclick = () => sessionId && call('claude.interrupt', { sessionId });
+$('project').onchange = () => { sessionId = null; $('chat').innerHTML = ''; $('sessionInfo').textContent = 'new session on next message'; };
+$('mode').onchange = () => sessionId && call('claude.setMode', { sessionId, permissionMode: $('mode').value });
+
+function renderClaude(ev) {
+  if (ev.type === 'nicode' && ev.subtype === 'user_turn') return addMsg(ev.text, 'user');
+  if (ev.type === 'nicode') return addMsg(`[${ev.subtype}] ${ev.text ?? ''}`, 'tool');
+  if (ev.type === 'system' && ev.subtype === 'init') return addMsg(`model ${ev.model} · ${ev.cwd}`, 'tool');
+  if (ev.type === 'assistant') for (const b of ev.message?.content ?? []) {
+    if (b.type === 'text') addMsg(b.text);
+    else if (b.type === 'tool_use') addMsg(`⚙ ${b.name} ${JSON.stringify(b.input).slice(0, 300)}`, 'tool');
+  }
+  if (ev.type === 'user') for (const b of ev.message?.content ?? []) {
+    if (b.type === 'tool_result') addMsg(`${b.is_error ? '✗' : '✓'} ${(typeof b.content === 'string' ? b.content : JSON.stringify(b.content)).slice(0, 400)}`, 'tool');
+  }
+  if (ev.type === 'result') addMsg(`— done (${ev.subtype}, ${Math.round((ev.duration_ms ?? 0) / 1000)}s${ev.total_cost_usd ? ', $' + ev.total_cost_usd.toFixed(3) : ''})`, 'tool');
+}
+function showPermission(r) {
+  const box = document.createElement('div'); box.className = 'perm'; box.id = 'perm-' + r.requestId;
+  box.innerHTML = `<b>Approve ${r.toolName}?</b><pre></pre><div class="row" style="margin-top:6px"><button data-a="allow">Allow</button><button data-a="always">Always allow</button><button data-a="deny">Deny</button></div>`;
+  box.querySelector('pre').textContent = JSON.stringify(r.input, null, 2).slice(0, 2000);
+  box.querySelectorAll('button').forEach((b) => (b.onclick = () => {
+    const a = b.dataset.a;
+    call('claude.permission.respond', { requestId: r.requestId, behavior: a === 'deny' ? 'deny' : 'allow', remember: a === 'always' });
+  }));
+  $('perms').appendChild(box);
+}
+
+// ── Terminal ──
+const term = new Terminal({ fontSize: 13, convertEol: false, theme: { background: '#0b0d11' } });
+const fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open($('term')); fit.fit();
+window.addEventListener('resize', () => { fit.fit(); termId && call('term.resize', { termId, cols: term.cols, rows: term.rows }); });
+term.onData((d) => termId && ws.send(JSON.stringify({ id: nextId++, method: 'term.write', params: { termId, data: b64.enc(d) } })));
+$('openTerm').onclick = async () => {
+  const cwd = $('project').value; if (!cwd) return alert('Pick a project first');
+  fit.fit();
+  const r = await call('term.open', { cwd, cols: term.cols, rows: term.rows });
+  if (r.error) return log(r.error);
+  termId = r.result.termId; $('termInfo').textContent = termId; term.reset(); term.focus();
+  const a = await call('term.attach', { termId, cols: term.cols, rows: term.rows });
+  if (a.result?.replay) term.write(b64.dec(a.result.replay));
+};
+
+function onEvent(f) {
+  const d = f.data;
+  if (f.event === 'term.data') { if (d.termId === termId) term.write(b64.dec(d.data)); return; }
+  log(f, '⇠');
+  if (f.event === 'claude.event' && d.sessionId === sessionId) renderClaude(d.event);
+  if (f.event === 'claude.permission.request' && d.sessionId === sessionId) showPermission(d);
+  if (f.event === 'claude.permission.resolved') document.getElementById('perm-' + d.requestId)?.remove();
+}
+</script>
+</body>
+</html>

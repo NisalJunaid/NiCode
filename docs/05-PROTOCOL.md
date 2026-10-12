@@ -15,7 +15,7 @@ Transport by mode: `https` → `wss://<ip-dashed>.sslip.io/ws` (Caddy terminates
 
 ## Authentication
 - The app sends `Authorization: Bearer <token>` on the WebSocket upgrade. (React Native's `new WebSocket(url, undefined, { headers })` supports this.)
-- Browser fallback (test client only): subprotocol `nicode.<token>`. The daemon echoes `nicode` back.
+- Browser fallback (test client only): offer the subprotocols `['nicode', 'nicode.<token>']`. The daemon reads the token from the second and selects `nicode`, so the token is never echoed back.
 - **One token per paired device.** `config.json → tokens: [{id, name, sha256, createdAt}]`. The daemon hashes the presented token and compares it in constant time against every entry. The matching entry becomes the connection's `device`, which `server.info` returns.
 - Devices are added by `nicode token add <name> [--json]` / `nicode pair` (also what the app runs over SSH, see 04), by the installer (`--token`), or by `auth.rotate`. Adding a device never affects the others.
 - The daemon re-reads `tokens` on SIGHUP (`systemctl reload nicode`) and when `config.json` changes. Sockets whose token was removed are closed with code 4401.

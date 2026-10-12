@@ -1,0 +1,33 @@
+{
+  "name": "nicode-server",
+  "version": "0.1.0",
+  "description": "niCode daemon: runs Claude Code sessions, terminals, files and git for the niCode app",
+  "private": true,
+  "type": "module",
+  "main": "dist/server/src/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "typecheck": "tsc -p . --noEmit",
+    "dev": "tsx watch src/index.ts",
+    "start": "node .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "chokidar": "^5.0.0",
+    "node-pty": "^1.1.0",
+    "pino": "^10.4.0",
+    "strip-ansi": "^7.2.0",
+    "ws": "^8.22.0",
+    "zod": "^4.6.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/ws": "^8.18.2",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.3"
+  }
+}
