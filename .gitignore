@@ -1,0 +1,9 @@
+node_modules/
+server/dist/
+app/.expo/
+app/android/
+app/ios/
+app/web/dist/
+*.log
+.env
+.env.*

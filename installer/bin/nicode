@@ -1,0 +1,252 @@
+#!/usr/bin/env bash
+# nicode — manage a niCode host. Installed to /usr/local/bin/nicode by the installer.
+# The app also calls `nicode status --json` and `nicode token add <name> --json` over SSH
+# to pair with an already-installed server (see docs/04 "Connect to an existing server").
+set -euo pipefail
+
+INSTALLER=/usr/local/lib/nicode/nicode-install.sh
+SETTINGS=/etc/nicode/install.env
+PROFILE=/var/lib/nicode/profile.env
+STATUS=/var/lib/nicode/public/status.json
+NICODE_CLI_VERSION=2
+
+# shellcheck disable=SC1090
+[[ -r "$SETTINGS" ]] && source "$SETTINGS"
+# shellcheck disable=SC1090
+[[ -r "$PROFILE" ]] && source "$PROFILE"
+NI_USER="${NI_USER:-${NICODE_USER:-dev}}"
+NI_USER_HOME="${NI_USER_HOME:-$(getent passwd "$NI_USER" 2>/dev/null | cut -d: -f6 || echo "/home/$NI_USER")}"
+CONFIG="$NI_USER_HOME/.config/nicode/config.json"
+ENVFILE="$NI_USER_HOME/.config/nicode/env"
+
+ORIG_ARGS=("$@")
+need_root() { [[ $EUID -eq 0 ]] || exec sudo "$0" "${ORIG_ARGS[@]}"; }
+as_user()   { if [[ "$(id -un)" == "$NI_USER" ]]; then bash -lc "$1"; else sudo -u "$NI_USER" -H bash -lc "$1"; fi; }
+cfg()       { jq -r "$1 // empty" "$CONFIG" 2>/dev/null || true; }
+have_service() { [[ -f /etc/systemd/system/nicode.service ]]; }
+has_flag()  { local f="$1"; shift; local a; for a in "$@"; do [[ "$a" == "$f" ]] && return 0; done; return 1; }
+
+claude_logged_in() {
+  [[ -s "$NI_USER_HOME/.claude/.credentials.json" ]] || grep -qs '^CLAUDE_CODE_OAUTH_TOKEN=.' "$ENVFILE"
+}
+
+set_status_state() {
+  [[ -w "$STATUS" || $EUID -eq 0 ]] || return 0
+  local tmp; tmp="$(mktemp)"
+  jq --arg s "$1" '.state=$s | .updatedAt=(now|todate) | .error=null' "$STATUS" >"$tmp" && cat "$tmp" >"$STATUS"
+  rm -f "$tmp"
+}
+
+endpoint() {  # prints "<scheme> <host> <port>"
+  case "$(cfg .transport)" in
+    https) echo "https $(cfg .publicHost) 443" ;;
+    *)     echo "http $(cfg .publicHost) $(cfg .port)" ;;
+  esac
+}
+
+pairing_uri() {
+  local scheme host port
+  read -r scheme host port < <(endpoint)
+  printf 'nicode://pair?h=%s&p=%s&s=%s&t=%s&n=%s' "$host" "$port" "$scheme" "$1" "$(hostname)"
+}
+
+cmd_pair_print() {
+  local uri; uri="$(pairing_uri "$1")"
+  echo "Scan in the niCode app (Add server → Scan QR):"
+  command -v qrencode >/dev/null && qrencode -t ansiutf8 "$uri"
+  echo "Or enter manually:"
+  printf '  host:  %s\n  token: %s\n  uri:   %s\n' "$(cfg .publicHost)" "$1" "$uri"
+}
+
+# Writes the config atomically, keeping owner + mode 600.
+config_update() {  # config_update <jq filter> [jq args...]
+  local filter="$1"; shift
+  local tmp; tmp="$(mktemp "$CONFIG.XXXX")"
+  jq "$@" "$filter" "$CONFIG" >"$tmp"
+  chmod 600 "$tmp"; chown "$NI_USER:" "$tmp"; mv -f "$tmp" "$CONFIG"
+}
+
+reload_daemon() { have_service && systemctl reload-or-restart nicode >/dev/null 2>&1 || true; }
+
+# ── Tokens: one per paired device ───────────────────────────────────────────
+cmd_token_add() {
+  need_root
+  local name="${1:-device}" token hash id
+  [[ "$name" == --json ]] && name=device
+  [[ -f "$CONFIG" ]] || { echo "niCode daemon not installed (no $CONFIG)" >&2; exit 1; }
+  token="$(openssl rand -hex 32)"
+  hash="$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)"
+  id="d_$(openssl rand -hex 4)"
+  config_update '.tokens = ((.tokens // []) + [{id: $id, name: $n, sha256: $h, createdAt: (now|todate)}])' \
+    --arg id "$id" --arg n "$name" --arg h "$hash"
+  reload_daemon
+  if has_flag --json "$@"; then
+    local scheme host port
+    read -r scheme host port < <(endpoint)
+    jq -n --arg id "$id" --arg name "$name" --arg token "$token" --arg scheme "$scheme" \
+      --arg host "$host" --argjson port "$port" --arg uri "$(pairing_uri "$token")" \
+      '{id:$id, name:$name, token:$token, scheme:$scheme, host:$host, port:$port, uri:$uri}'
+  else
+    echo "Added device \"$name\" ($id)."
+    cmd_pair_print "$token"
+  fi
+}
+
+cmd_token_list() {
+  need_root
+  if has_flag --json "$@"; then jq '[.tokens // [] | .[] | {id, name, createdAt}]' "$CONFIG"; return; fi
+  jq -r '(.tokens // [])[] | "\(.id)\t\(.createdAt)\t\(.name)"' "$CONFIG" | column -t -s $'\t'
+}
+
+cmd_token_revoke() {
+  need_root
+  local key="${1:?usage: nicode token revoke <id|name>}"
+  config_update '.tokens = [(.tokens // [])[] | select(.id != $k and .name != $k)]' --arg k "$key"
+  reload_daemon
+  echo "Revoked $key. That device must pair again."
+}
+
+cmd_token_rotate() {  # revoke everything, issue one new token
+  need_root
+  config_update '.tokens = []'
+  echo "All device tokens revoked."
+  cmd_token_add "${1:-device}"
+}
+
+# ── Status ──────────────────────────────────────────────────────────────────
+cmd_status() {
+  local state="unknown" svc="not-installed" installed=false
+  [[ -r "$STATUS" ]] && state="$(jq -r .state "$STATUS" 2>/dev/null || echo unknown)"
+  [[ -f "$CONFIG" ]] && installed=true
+  have_service && svc="$(systemctl is-active nicode 2>/dev/null || true)"
+  local claude_ver claude_ok=false gh_ok=false
+  claude_ver="$(as_user 'claude --version 2>/dev/null' | head -n1 || true)"
+  claude_logged_in && claude_ok=true
+  as_user 'gh auth status >/dev/null 2>&1' && gh_ok=true
+
+  if has_flag --json "$@"; then
+    local scheme="" host="" port=0
+    [[ "$installed" == true ]] && read -r scheme host port < <(endpoint)
+    jq -n --argjson cli "$NICODE_CLI_VERSION" --argjson installed "$installed" --arg state "$state" \
+      --arg daemon "$svc" --arg scheme "$scheme" --arg host "$host" --argjson port "${port:-0}" \
+      --arg transport "$(cfg .transport)" --arg user "$NI_USER" --arg projectsRoot "$(cfg .projectsRoot)" \
+      --arg claudeVersion "$claude_ver" --argjson claude "$claude_ok" --argjson github "$gh_ok" \
+      '{cli:$cli, installed:$installed, state:$state, daemon:$daemon, scheme:$scheme, host:$host, port:$port,
+        transport:$transport, user:$user, projectsRoot:$projectsRoot,
+        claudeVersion:$claudeVersion, claudeLoggedIn:$claude, githubLoggedIn:$github}'
+    return
+  fi
+  printf 'State:     %s\n' "$state"
+  printf 'Daemon:    %s (127.0.0.1:%s)\n' "$svc" "$(cfg .port)"
+  printf 'Endpoint:  %s (%s)\n' "$(cfg .publicHost)" "$(cfg .transport)"
+  printf 'User:      %s   projects: %s\n' "$NI_USER" "$(cfg .projectsRoot)"
+  printf 'Claude:    %s\n' "${claude_ver:-not installed}"
+  if [[ "$claude_ok" == true ]]; then echo 'Login:     Claude ✓'; else echo 'Login:     Claude ✗  (run: nicode login)'; fi
+  if [[ "$gh_ok" == true ]]; then echo 'GitHub:    ✓'; else echo 'GitHub:    ✗  (log in from the app, or: gh auth login)'; fi
+  printf 'Devices:   %s paired\n' "$(jq '(.tokens // []) | length' "$CONFIG" 2>/dev/null || echo 0)"
+}
+
+cmd_motd() {
+  local state; state="$(jq -r .state "$STATUS" 2>/dev/null || echo unknown)"
+  case "$state" in
+    ready)              echo "niCode: ready — $(cfg .publicHost)" ;;
+    needs_claude_login) echo "niCode: Claude login pending — open the app or run: nicode login" ;;
+    base_ready)         echo "niCode: base tools installed (no daemon yet) — run: sudo nicode update" ;;
+    *)                  echo "niCode: $state — run: nicode status" ;;
+  esac
+}
+
+cmd_login() {
+  if claude_logged_in && ! has_flag --force "$@"; then
+    echo "Claude is already logged in for $NI_USER (use --force to log in again)."; return
+  fi
+  echo "Step 1/2: Claude will print a URL. Open it on any device, approve, and paste the code back here."
+  as_user 'claude setup-token' || true
+  echo
+  local token
+  read -rsp "Step 2/2: paste the long-lived token it printed (sk-ant-oat…): " token; echo
+  [[ "$token" == sk-ant-* ]] || { echo "That doesn't look like a Claude OAuth token." >&2; exit 1; }
+  as_user "umask 077; mkdir -p '$(dirname "$ENVFILE")'; touch '$ENVFILE'; sed -i '/^CLAUDE_CODE_OAUTH_TOKEN=/d' '$ENVFILE'; printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' '$token' >> '$ENVFILE'"
+  echo "Verifying…"
+  if as_user "CLAUDE_CODE_OAUTH_TOKEN='$token' claude -p 'Reply with just OK' 2>&1" | grep -qi ok; then
+    echo "Claude login OK."
+    have_service && sudo systemctl restart nicode
+    set_status_state ready || true
+  else
+    echo "Verification failed — check the token and try again." >&2; exit 1
+  fi
+}
+
+cmd_update() {
+  need_root
+  if [[ -n "${NICODE_INSTALLER_URL:-}" ]] && ! grep -q '^exec bash' "$INSTALLER" 2>/dev/null; then
+    echo "Fetching latest installer…"
+    curl -fsSL "$NICODE_INSTALLER_URL" -o "$INSTALLER.new" && mv -f "$INSTALLER.new" "$INSTALLER" && chmod 755 "$INSTALLER"
+  fi
+  echo "Updating Claude Code…"
+  as_user 'claude update' || true
+  bash "$INSTALLER" --unattended --stage full --redo daemon,finish
+}
+
+cmd_uninstall() {
+  need_root
+  read -rp "Remove the niCode daemon, Caddy site and installer state? Projects, Claude and the user are kept. [y/N] " a
+  [[ "$a" =~ ^[Yy] ]] || exit 0
+  if have_service; then systemctl disable --now nicode || true; rm -f /etc/systemd/system/nicode.service; systemctl daemon-reload; fi
+  if [[ -f /etc/caddy/nicode.caddy ]]; then
+    rm -f /etc/caddy/nicode.caddy
+    sed -i '\|import /etc/caddy/nicode.caddy|d' /etc/caddy/Caddyfile
+    systemctl reload caddy || true
+  fi
+  if [[ -f /etc/nginx/sites-available/nicode.conf ]]; then
+    rm -f /etc/nginx/sites-enabled/nicode.conf /etc/nginx/sites-available/nicode.conf
+    nginx -t >/dev/null 2>&1 && systemctl reload nginx || true
+  fi
+  rm -rf /opt/nicode /var/lib/nicode /etc/nicode /usr/local/lib/nicode /etc/update-motd.d/99-nicode
+  rm -f /usr/local/bin/nicode "$CONFIG"
+  echo "niCode removed."
+}
+
+usage() {
+  cat <<'EOF'
+nicode — manage this niCode host
+
+  status [--json]            Daemon, endpoint, Claude/GitHub login state, paired devices
+  pair [name]                Pair a new phone: new device token + QR (other devices keep working)
+  token add <name> [--json]  Same as pair; --json is what the app reads over SSH
+  token list [--json]        Paired devices
+  token revoke <id|name>     Unpair one device
+  token rotate               Revoke ALL devices and issue one new token
+  login [--force]            Log Claude Code in (skipped if already logged in)
+  doctor                     Re-detect the host and show what the installer would change
+  logs [-f]                  Daemon logs
+  restart                    Restart the daemon
+  update                     Update installer, Claude Code and daemon
+  uninstall                  Remove niCode (keeps projects, user and Claude)
+EOF
+}
+
+case "${1:-help}" in
+  status)    shift; cmd_status "$@" ;;
+  motd)      cmd_motd ;;
+  doctor)    need_root; bash "$INSTALLER" --dry-run ;;
+  login)     shift; cmd_login "$@" ;;
+  pair)      shift; cmd_token_add "${1:-$(hostname)-device}" ;;
+  token)
+    sub="${2:-}"; shift 2 || true
+    case "$sub" in
+      add)    cmd_token_add "$@" ;;
+      list)   cmd_token_list "$@" ;;
+      revoke) cmd_token_revoke "$@" ;;
+      rotate) cmd_token_rotate "$@" ;;
+      *)      usage; exit 2 ;;
+    esac ;;
+  _pair-print) cmd_pair_print "$2" ;;
+  logs)      shift; journalctl -u nicode --no-pager -n 200 "$@" ;;
+  restart)   need_root; systemctl restart nicode; echo restarted ;;
+  update)    cmd_update ;;
+  uninstall) cmd_uninstall ;;
+  version)   echo "nicode CLI v$NICODE_CLI_VERSION" ;;
+  help|-h|--help) usage ;;
+  *) usage; exit 2 ;;
+esac

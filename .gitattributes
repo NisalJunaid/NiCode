@@ -1,0 +1,5 @@
+* text=auto
+*.sh text eol=lf
+installer/bin/* text eol=lf
+dist/* text eol=lf
+*.yaml.tmpl text eol=lf

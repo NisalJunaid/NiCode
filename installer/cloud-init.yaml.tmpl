@@ -1,0 +1,21 @@
+#cloud-config
+# niCode — user_data sent by the app when it creates a droplet (POST /v2/droplets).
+# The app substitutes the {{...}} placeholders; app/src/provision/cloudInit.ts embeds a copy.
+# Secrets: NICODE_TOKEN is one-time — the installer shreds this file when done and the app
+# rotates the token (auth.rotate) right after pairing, because user_data stays readable via
+# the droplet metadata service.
+
+write_files:
+  - path: /root/nicode-answers.env
+    permissions: "0600"
+    content: |
+      NICODE_TOKEN={{TOKEN}}
+      NICODE_SETUP_ID={{SETUP_ID}}
+      NICODE_DEVICE_NAME='{{DEVICE_NAME}}'
+      NICODE_REPO={{REPO}}
+      NICODE_REF={{REF}}
+      NICODE_STAGE=full
+      NICODE_TRANSPORT=https
+
+runcmd:
+  - [bash, -c, "curl -fsSL {{INSTALLER_URL}} -o /root/nicode-install.sh && bash /root/nicode-install.sh --unattended --config /root/nicode-answers.env >> /var/log/nicode-cloud-init.log 2>&1"]
