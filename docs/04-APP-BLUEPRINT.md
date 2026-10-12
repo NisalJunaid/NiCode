@@ -14,7 +14,7 @@ protocol/types.ts and docs/05-PROTOCOL.md together.
 ## Product in one paragraph
 One app, three ways to add a server. First launch offers:
 1. **Connect to my server** (the main path). Enter the SSH connection details for a server you already have. If niCode is already on it, the app just pairs; if not, the app installs it. If Claude is already logged in on that server, there is **no login step**.
-2. **Pair with QR / code.** No SSH at all: scan the QR from `nicode pair` on the server, or type the host and token.
+2. **Pair with QR / code.** No SSH at all: scan the QR from `nicode pair` on the server, or type the host and the one-time code.
 3. **Create a server on DigitalOcean.** Paste an API token; the app creates and provisions a droplet.
 
 All three end on the same host screen. A Claude login or GitHub login screen appears only when the server reports it isn't logged in yet. Afterwards you pick a project and work in four tabs: **Chat** (Claude Code agent), **Files**, **Changes** (git), and **Terminal**. Push notifications tell you when the agent finishes or needs approval.
@@ -25,6 +25,7 @@ All three end on the same host screen. A Claude login or GitHub login screen app
   - Expo modules: `expo-dev-client`, `expo-secure-store`, `expo-notifications`, `expo-device`, `expo-web-browser`, `expo-clipboard`, `expo-camera`, `expo-crypto`, `expo-haptics`, `expo-build-properties`, `expo-localization`
   - UI and storage: `react-native-webview`, `react-native-mmkv`, `react-native-reanimated`, `react-native-gesture-handler`, `@gorhom/bottom-sheet`
   - State and rendering: `zustand`, `react-native-markdown-display`
+  - Device key and biometrics: `react-native-biometrics`. It creates an RSA-2048 key in the Android Keystore / iOS Secure Enclave and signs only after a fingerprint or face check. Add `expo-local-authentication` for the app-unlock prompt.
   - SSH: `@dylankenneally/react-native-ssh-sftp`, only for the "Use my server" path. If it doesn't build on the current SDK, isolate it behind `src/provision/ssh.ts` and treat the SSH path as optional until a working fork is found.
 - Shared protocol:
   - `tsconfig.json` → `"paths": { "@protocol/*": ["../protocol/*"] }`
@@ -36,7 +37,8 @@ All three end on the same host screen. A Claude login or GitHub login screen app
 npx create-expo-app@latest app --template default
 cd app
 npx expo install expo-dev-client expo-secure-store expo-notifications expo-device expo-web-browser expo-clipboard expo-camera expo-crypto expo-haptics expo-build-properties expo-localization react-native-webview react-native-mmkv react-native-reanimated react-native-gesture-handler @gorhom/bottom-sheet
-npm i zustand react-native-markdown-display @dylankenneally/react-native-ssh-sftp
+npx expo install expo-local-authentication
+npm i zustand react-native-markdown-display react-native-biometrics @dylankenneally/react-native-ssh-sftp
 npx expo run:android        # builds + installs the dev client on emulator/USB phone
 ```
 Remove the template's example screens.
@@ -54,7 +56,7 @@ app/
       do-token.tsx              # paste PAT, validate, explain scopes
       do-plan.tsx               # auto-picked plan, editable (region, size, name)
       ssh.tsx                   # connection details → probe → pair or install (see below)
-      pair.tsx                  # paste nicode://pair URI, or host + token by hand
+      pair.tsx                  # paste nicode://pair URI, or host + one-time code by hand
       progress.tsx              # live timeline (shared by both paths), resumable
       claude-login.tsx          # open URL → paste code → verify
       github-login.tsx          # device code (optional, skippable)
@@ -62,7 +64,7 @@ app/
     pair-scan.tsx               # expo-camera QR → parsePairingUri
     hosts/index.tsx             # host list with status dots
     hosts/[hostId]/index.tsx    # projects list + clone from GitHub + new project
-    hosts/[hostId]/server.tsx   # status, update, restart, rotate token, destroy droplet
+    hosts/[hostId]/server.tsx   # status, update, restart, devices, destroy droplet
     p/[hostId]/[project]/_layout.tsx    # tabs
     p/[hostId]/[project]/chat.tsx       # session list → session view
     p/[hostId]/[project]/files.tsx
@@ -76,7 +78,9 @@ app/
     provision/machine.ts        # provisioning state machine (persisted)
     provision/cloudInit.ts      # template (copy of installer/cloud-init.yaml.tmpl) + render()
     provision/ssh.ts            # SSH install runner
-    state/hosts.ts              # zustand + MMKV; tokens in SecureStore
+    state/hosts.ts              # zustand + MMKV (host list, deviceId per host)
+    auth/deviceKey.ts           # react-native-biometrics: ensureKey(), sign(message) with the grace-period policy
+    auth/login.ts               # pair(), challenge → sign → Authorization header
     state/sessions.ts           # per-session event list, lastSeq, status, pending permissions
     state/terminals.ts
     components/chat/*           # MessageList, UserBubble, AssistantText, ThinkingBlock, ToolCard,
@@ -97,13 +101,27 @@ app/
 
 ## Hosts and secrets
 - `Host = { id, name, kind: 'ssh'|'paired'|'do', baseUrl /* https://x.sslip.io or http://ip:port */, deviceId, sshHost?, sshPort?, sshUser?, dropletId?, region?, createdAt }` is stored in MMKV.
-- The **daemon token** goes in SecureStore under `host.<id>.token`. The **DO token** goes under `do.token`, with a "Forget DO token" action in settings.
+- **No server passwords are stored.**
+  - The phone has **one hardware key pair** (`react-native-biometrics` key alias), created on first pairing. The private key never leaves the Keystore / Secure Enclave.
+  - Each host stores only its `deviceId` (returned by `/pair`), in MMKV.
+- The **DO token** goes in SecureStore under `do.token`, with a "Forget DO token" action in settings.
 - **SSH credentials** are used for pairing and install and then forgotten, **unless** the user turns on "Remember SSH login for maintenance". In that case they go in SecureStore under `host.<id>.ssh` and enable Server-screen actions (update, restart, repair) even when the daemon is down.
 - The device name sent when pairing is `Device.deviceName` (expo-device), for example "Pixel 8". It shows up in `nicode token list` and in the app's Devices list.
-- Tokens are generated with `Crypto.getRandomBytes(32)` → hex, and setup ids with 16 bytes.
+- Setup ids are generated with `Crypto.getRandomBytes(16)` → hex.
 
 ## RPC client (`src/rpc/client.ts`)
-- `new WebSocket(wsUrl, undefined, { headers: { Authorization: 'Bearer ' + token } })`.
+- **Login on every (re)connect** (`auth/login.ts`):
+  1. `GET {baseUrl}/auth/challenge` returns `{nonce}`.
+  2. `deviceKey.sign(authMessage(nonce, deviceId))` produces a signature.
+  3. `new WebSocket(wsUrl, undefined, { headers: { Authorization: signatureHeader(deviceId, nonce, sig) } })`.
+
+  A 401 on `/ws` means the device was revoked or the key changed: show "This phone is no longer paired" with a **Pair again** action. A 429 means wait.
+- **Biometric policy** (`auth/deviceKey.ts`): once per unlock, with a 5-minute grace period.
+  - The key is created as a hardware key that requires user authentication, with a **validity window of 300 s**. On Android that's a Keystore key with `setUserAuthenticationParameters(300, BIOMETRIC_STRONG | DEVICE_CREDENTIAL)`; on iOS, an `LAContext` with `touchIDAuthenticationAllowableReuseDuration = 300` passed to `SecKeyCreateSignature`.
+  - On app start, and when the app returns from the background after the window has lapsed, show one biometric prompt. Reconnects within the window then sign silently.
+  - A settings toggle **Ask every time** creates the key with a window of 0.
+  - First try `react-native-biometrics` (RSA-2048, `createKeys` / `createSignature`). If it can't set the validity window, write a small Expo native module (Kotlin `KeyGenParameterSpec`, Swift `SecKeyCreateRandomKey` + `SecKeyCreateSignature`) behind the same `deviceKey.ts` interface: `ensureKey() → {alg, publicKey}`, `sign(message) → base64`, `deviceId()`.
+  - `deviceId()` = `"d_" + sha256hex(publicKey).slice(0, 8)` (expo-crypto). This is the same rule the daemon and installer use, so a pre-paired droplet needs no extra round trip.
 - `call<M extends MethodName>(method, params): Promise<MethodResult<M>>` with incrementing ids, a 30 s timeout (overridable per call), and errors rejected as `RpcError`.
 - `on<E extends EventName>(event, fn)` returns an unsubscribe function.
 - **Reconnect:**
@@ -139,7 +157,7 @@ Handle 401 (bad token), 403 (missing scope), 422 (shows DO's message) and 429 (r
 
   Pick the first region that is `available` and lists the chosen size.
 - `ssh_keys`: all key ids in the account (shown as "Attached for emergency access: N keys"). If there are none, show a notice that DO will email a root password; that is acceptable because the installer doesn't need SSH.
-- `monitoring: true`, `tags: ['nicode']`, `user_data: renderCloudInit({ token, setupId, repo, ref, installerUrl })`.
+- `monitoring: true`, `tags: ['nicode']`, `user_data: renderCloudInit({ devicePubKey: 'RS256:<base64 public key>', deviceName, setupId, repo, ref, installerUrl })`. Only the **public** key goes into user_data, so there is nothing secret to leak or rotate. Call `deviceKey.ensureKey()` first.
 
 **State machine (`src/provision/machine.ts`)**: persisted in MMKV after every transition, so killing the app resumes exactly where it was.
 ```
@@ -149,10 +167,9 @@ idle → creating            POST /droplets              → save dropletId
                            poll GET {baseUrl}/setup/status?sid=<setupId> every 3s
                            (network/TLS errors are expected for the first ~1–3 min: show "Waiting for the server…")
                            until state ∈ {needs_claude_login, ready, base_ready, error}
-     → connecting          open RPC with the token; server.info
+     → connecting          signed login with deviceId() (pre-paired via NICODE_DEVICE_PUBKEY); server.info
      → claudeLogin         (skip if setup.claude)  → claude-login.tsx
      → github              optional → github-login.tsx
-     → rotating            auth.rotate → store the new token → reconnect
      → done                create Host; delete the machine record
 error states keep { step, message, canRetry }, with buttons:
      Retry step · View status details · Destroy droplet and start over
@@ -178,28 +195,29 @@ The equivalent of VS Code Remote-SSH: you give connection details and the app ta
    ```
    `${SUDO}` is empty for root. For other users it's `sudo -n`, or `sudo -S -p ''` with the password piped in when `-n` fails. Parse the result into `{installed, daemon, state, scheme, host, port, claudeLoggedIn, githubLoggedIn, projectsRoot, user}` (see `nicode status --json`).
 3. **Branch:**
-   - **Already installed, daemon active:** run `${SUDO} nicode token add "<device name>" --json` → `{id, token, scheme, host, port}`. Save the Host and connect. **No install and no login**: it's done in seconds. Other paired devices keep working.
+   - **Already installed, daemon active:** run `${SUDO} nicode pair "<device name>" --json` → `{code, scheme, host, port}`. Then do the normal pairing: `ensureKey()` → `POST /pair {code, deviceName, alg, publicKey}`. Save the Host and log in. **No install and no Claude login**: it's done in seconds. Other paired devices keep working.
    - **Installed, but the daemon isn't active:** offer **Repair** → `${SUDO} nicode update` (streamed), then pair as above.
-   - **Not installed:** generate a token and setup id, then run
+   - **Not installed:** call `ensureKey()`, generate a setup id, then run
      ```sh
-     curl -fsSL <installerUrl> -o /tmp/nicode-install.sh && ${SUDO} bash /tmp/nicode-install.sh --unattended --token <t> --setup-id <s> --device-name "<device name>" [--projects-root …] [--no-root] 2>&1
+     curl -fsSL <installerUrl> -o /tmp/nicode-install.sh && ${SUDO} bash /tmp/nicode-install.sh --unattended --device-key "RS256:<publicKey>" --setup-id <s> --device-name "<device name>" [--projects-root …] [--no-root] 2>&1
      ```
      Stream the output into a log view using the SSH library's shell API. If only `execute` is available, run it under `nohup` and poll. Progress also comes from `https://<host>/setup/status?sid=` like the DO path. The installer automatically **reuses the user who is already logged in to Claude (including root) and the folder holding the existing repos**, so nothing is set up twice.
-4. **Connect** over WSS with the token, then `server.info`.
+4. **Log in** (challenge → biometric signature) over WSS with `deviceId()`, then `server.info`.
    - `setup.claude === true` → done, with **no Claude login screen**.
    - `false` → the Claude login screen (the only case where a login appears), then GitHub optionally, if `setup.github` is false and the user wants it.
-5. No token rotation is needed here: the token never left the SSH channel.
+5. Nothing secret ever went through SSH or the screen: only a public key, or a one-time code that's already used up.
 
 If the server has no public IP (LAN only), the installer picks `local` transport. The app warns that it only works on the same network, or suggests `--transport tailscale`.
 
 ## Pair with QR / code (`onboarding/pair.tsx`, `pair-scan.tsx`)
 For servers someone has already set up, when you don't want to give the app SSH access:
 - On the server, run `nicode pair "My phone"`. It prints a QR code plus a `nicode://pair?...` URI.
-- In the app: **Scan QR** (expo-camera) or **paste the URI**, or enter host and token by hand → `parsePairingUri()` → connect → `server.info`. Show the login screens only if the server reports it isn't logged in.
+- In the app: **Scan QR** (expo-camera) or **paste the URI**, or enter host and the one-time code by hand → `parsePairingUri()` → `ensureKey()` (biometric) → `POST /pair` → signed login → `server.info`. Show the Claude/GitHub login screens only if the server reports it isn't logged in.
+- Errors: a 401 from `/pair` means the code is wrong, used or expired; say "Run `nicode pair` again".
 - Also register the `nicode://` scheme, so tapping a pairing link on the phone opens this screen.
 
 ## Devices (`hosts/[hostId]/server.tsx`)
-Lists `auth.devices` (the current device is marked). Actions: rename, revoke another device, and "Re-key this device" (`auth.rotate`).
+Lists `auth.devices` (the current device is marked; `kind` shows phone or browser token, with the expiry for tokens). Actions: rename, and revoke a device (other phones and browser tokens). To replace this phone's key: revoke it, then pair again.
 
 ## Claude login screen
 1. `setup.claudeLogin.start` → `{loginId, url}`.
@@ -293,7 +311,7 @@ Messages are JSON strings through `postMessage` / `onMessage`. Binary data is ba
 |---|---|---|
 | M1 | Project scaffold, theme, hosts store, RPC client, **Pair with QR/code** (scan, URI, manual), `server.info` screen | Connects to the WSL dev daemon (`ws://10.0.2.2:7878`); killing the daemon shows red and recovers automatically |
 | M2 | DO API client, do-token, do-plan, the provisioning machine through `installing`, progress timeline | With a real PAT: the droplet is created, the timeline goes live and reaches `needs_claude_login`; killing the app mid-way resumes; "Destroy" deletes the droplet |
-| M3 | **Connect to my server (SSH)**: probe, pair-only, repair, install branches; Claude/GitHub login screens shown only when needed; token rotation for DO; Devices screen | (a) A server with niCode already installed and Claude logged in → paired in seconds with **no login screen**. (b) An existing droplet with Claude logged in as root and no niCode → installs, reuses root's login, no login screen. (c) A fresh server → Claude login appears. Pairing a second device leaves the first connected |
+| M3 | **Connect to my server (SSH)**: probe, pair-only, repair, install branches; Claude/GitHub login screens shown only when needed; biometric device key + signed login; Devices screen | (a) A server with niCode already installed and Claude logged in → paired in seconds with **no login screen**. (b) An existing droplet with Claude logged in as root and no niCode → installs, reuses root's login, no login screen. (c) A fresh server → Claude login appears. Pairing a second device leaves the first connected |
 | M4 | Terminal (web build pipeline, TerminalView, ExtraKeysBar, multiple terminals) | `htop`, `vim` and Ctrl-C work; backgrounding and returning replays the screen |
 | M5 | Chat with all cards, composer, modes, models, interrupt, PermissionSheet | Ask Claude to add a function → approve the Edit → the diff card shows; deny works; Stop works |
 | M6 | Files and editor | Browse, open, edit and save; editing while Claude changes the file → conflict prompt |

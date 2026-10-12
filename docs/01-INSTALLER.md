@@ -87,15 +87,15 @@ Run `bash nicode-install.sh --help`. The important ones:
 | `--dry-run` | Detect and print the plan, then exit. No root needed, nothing changes |
 | `--unattended` | No review screen and no prompts (used by the app and cloud-init) |
 | `--stage base\|full` | Tools only, or tools plus the daemon (default `full`) |
-| `--token`, `--setup-id` | Supplied by the app so it can follow progress and connect. Without them, the installer generates its own |
+| `--device-key ALG:B64`, `--setup-id` | Supplied by the app: its phone's **public** key (pre-pairs the phone) and the id that guards `/setup/status`. Without a device key, a one-time pairing QR is shown at the end |
 | `--transport`, `--domain` | Override the transport choice, or use your own domain instead of sslip.io |
 | `--projects-root DIR`, `--no-root`, `--user NAME` | Override the detected projects folder and user |
-| `--device-name NAME` | Label for the device token passed with `--token` |
+| `--device-name NAME` | Label for the `--device-key` phone |
 | `--source-dir DIR` | Build the daemon from a local checkout instead of cloning (WSL development) |
 | `--config FILE` | Source `NICODE_*` variables from a file (cloud-init answers) |
 | `--only`, `--skip`, `--redo` | Step selection, for example `--redo daemon` |
 
-Every flag also has an environment-variable form: `NICODE_TOKEN`, `NICODE_STAGE`, `NICODE_TRANSPORT`, `NICODE_USER`, `NICODE_NO_ROOT`, `NICODE_PROJECTS_ROOT`, `NICODE_DEVICE_NAME`, `NICODE_PORT`, `NICODE_DOMAIN`, `NICODE_REPO`, `NICODE_REF`, `NICODE_SOURCE_DIR`, `NICODE_TS_AUTHKEY`, `NICODE_GIT_NAME`, `NICODE_GIT_EMAIL`, `NICODE_CLAUDE_VERSION`, `NICODE_SUDO_NOPASSWD`. Precedence: saved settings < `--config` < environment < flags.
+Every flag also has an environment-variable form: `NICODE_DEVICE_PUBKEY`, `NICODE_STAGE`, `NICODE_TRANSPORT`, `NICODE_USER`, `NICODE_NO_ROOT`, `NICODE_PROJECTS_ROOT`, `NICODE_DEVICE_NAME`, `NICODE_PORT`, `NICODE_DOMAIN`, `NICODE_REPO`, `NICODE_REF`, `NICODE_SOURCE_DIR`, `NICODE_TS_AUTHKEY`, `NICODE_GIT_NAME`, `NICODE_GIT_EMAIL`, `NICODE_CLAUDE_VERSION`, `NICODE_SUDO_NOPASSWD`. Precedence: saved settings < `--config` < environment < flags.
 
 ## Files it creates
 | Path | What |
@@ -109,14 +109,15 @@ Every flag also has an environment-variable form: `NICODE_TOKEN`, `NICODE_STAGE`
 | `/etc/caddy/nicode.caddy` | Caddy site (imported from `/etc/caddy/Caddyfile`) |
 | `/etc/systemd/system/nicode.service` | The daemon unit (`User=<dev>`, `KillMode=process` so tmux survives restarts) |
 | `/opt/nicode` | The niCode checkout the daemon is built from |
-| `~<user>/.config/nicode/{config.json,env}` | Daemon config (one hashed token per paired device) and env (`CLAUDE_CODE_OAUTH_TOKEN`, only if logged in through the app), both mode 600 |
+| `~<user>/.config/nicode/{config.json,env}` | Daemon config (paired phones' public keys, short-lived browser tokens hashed, one-time pairing codes hashed) and env (`CLAUDE_CODE_OAUTH_TOKEN`, only if logged in through the app), both mode 600 |
 | `/etc/ssh/sshd_config.d/10-nicode.conf`, `/etc/sudoers.d/90-nicode-<user>` | Hardening and sudo |
 
 ## The `nicode` command
 ```
 nicode status [--json]       # daemon, endpoint, Claude/GitHub login, paired devices
-nicode pair [name]           # pair another phone: new device token + QR (others keep working)
-nicode token add <name> [--json] | list | revoke <id|name> | rotate
+nicode pair [name] [--json]  # pair a phone: one-time code + QR (single use, 10 min)
+nicode token add [name] --expires 1h   # short-lived token for the browser test console (max 30d)
+nicode token list | revoke <id|name> | revoke-all
 nicode login                 # terminal Claude login (skipped if already logged in)
 nicode doctor                # re-detect and show what the installer would change
 nicode logs -f               # daemon logs
@@ -124,13 +125,13 @@ nicode restart
 nicode update                # newest installer + Claude Code + rebuild daemon
 nicode uninstall             # remove niCode (keeps projects, user, Claude)
 ```
-`status --json` and `token add --json` are what the app runs over SSH when you use **Connect to my server**.
+`status --json` and `pair --json` are what the app runs over SSH when you use **Connect to my server**.
 
 ## How the app uses it
-1. When creating a droplet, the app sends [cloud-init.yaml.tmpl](../installer/cloud-init.yaml.tmpl) as `user_data`, with a token and setup id it generated.
+1. When creating a droplet, the app sends [cloud-init.yaml.tmpl](../installer/cloud-init.yaml.tmpl) as `user_data`, with the phone's **public** key (`NICODE_DEVICE_PUBKEY`) and a setup id. Nothing secret is in user_data.
 2. cloud-init downloads the bundle and runs `--unattended --config /root/nicode-answers.env`.
 3. Caddy comes up during the `edge` step. The app polls `https://<ip-dashed>.sslip.io/setup/status?sid=<id>` and shows each step live.
-4. When the state reaches `needs_claude_login`, the app connects over WSS and runs the Claude login, then the GitHub login, then **rotates the token**, because the original one was in user_data, which stays readable through the droplet metadata service.
+4. When the state reaches `needs_claude_login`, the app connects over WSS and runs the Claude login, then the GitHub login. It logs in by signing a server challenge with the phone's hardware key, which was pre-registered from user_data.
 
 ## Maintaining the installer
 - Edit files under `installer/`, then **rebuild the bundle**: `bash installer/build.sh`. This writes `dist/nicode-install.sh`, which must be committed because servers download that exact file.

@@ -449,7 +449,7 @@ step_git() {
 NI_APP_DIR="${NI_APP_DIR:-/opt/nicode}"
 
 step_daemon() {
-  local src cfg_dir cfg token="" bind
+  local src cfg_dir cfg bind
 
   # 1. Source: a local checkout (dev, e.g. WSL → /mnt/c/...) or a clone of NICODE_REPO@NICODE_REF.
   if [[ -n "${NICODE_SOURCE_DIR:-}" ]]; then
@@ -473,23 +473,25 @@ step_daemon() {
   # Build with the Node chosen in the node step (may be a private one in /opt/nicode/node).
   as_user "export PATH='$(dirname "$NI_NODE_BIN")':\$PATH; cd '$src/server' && npm ci --no-audit --no-fund && npm run build"
 
-  # 3. Config. One hashed token per paired device (`nicode token add/list/revoke`).
-  #    Existing devices are kept; an app-supplied token is added; a first install with no
-  #    token gets an "installer" device whose token is shown as a QR at the end.
+  # 3. Config. Devices are phones (hardware public keys) or short-lived browser tokens.
+  #    Existing phones and unexpired tokens are kept; legacy permanent tokens are dropped.
+  #    A droplet created by the app passes the phone's PUBLIC key (NICODE_DEVICE_PUBKEY=ALG:BASE64),
+  #    so no secret ever goes through cloud-init. Otherwise pair with `nicode pair` (shown at the end).
   cfg_dir="$NI_USER_HOME/.config/nicode"
   cfg="$cfg_dir/config.json"
-  local tokens='[]' hash
-  [[ -f "$cfg" ]] && tokens="$(jq -c '.tokens // []' "$cfg")"
-  if [[ -n "${NICODE_TOKEN:-}" ]]; then
-    token="$NICODE_TOKEN"
-  elif [[ "$tokens" == '[]' ]]; then
-    token="$(openssl rand -hex 32)"
-    printf '%s' "$token" >"$NI_TMP/pair_token"; chmod 600 "$NI_TMP/pair_token"
+  local devices='[]' codes='[]'
+  if [[ -f "$cfg" ]]; then
+    devices="$(jq -c '(.devices // .tokens // []) | map(select(.publicKey != null or .expiresAt != null))' "$cfg")"
+    codes="$(jq -c '.pairingCodes // []' "$cfg")"
   fi
-  if [[ -n "$token" ]]; then
-    hash="$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)"
-    tokens="$(jq -c --arg h "$hash" --arg n "${NICODE_DEVICE_NAME:-${NICODE_TOKEN:+app}}" --arg id "d_$(openssl rand -hex 4)" \
-      'if any(.[]; .sha256 == $h) then . else . + [{id: $id, name: (if $n == "" then "installer" else $n end), sha256: $h, createdAt: (now | todate)}] end' <<<"$tokens")"
+  if [[ -n "${NICODE_DEVICE_PUBKEY:-}" ]]; then
+    local alg="${NICODE_DEVICE_PUBKEY%%:*}" pub="${NICODE_DEVICE_PUBKEY#*:}"
+    case "$alg" in RS256|ES256|Ed25519) ;; *) step_detail "NICODE_DEVICE_PUBKEY must be ALG:BASE64 (RS256|ES256|Ed25519)"; return 1 ;; esac
+    devices="$(jq -c --arg a "$alg" --arg k "$pub" --arg n "${NICODE_DEVICE_NAME:-phone}" --arg id "d_$(printf '%s' "$pub" | sha256sum | cut -c1-8)" \
+      'if any(.[]; .publicKey == $k) then . else . + [{id: $id, name: $n, alg: $a, publicKey: $k, createdAt: (now | todate)}] end' <<<"$devices")"
+  fi
+  if [[ -n "${NICODE_TOKEN:-}" ]]; then
+    log_warn "NICODE_TOKEN/--token is no longer supported (permanent tokens were removed). Pair with: nicode pair"
   fi
 
   case "$NICODE_TRANSPORT" in
@@ -497,7 +499,7 @@ step_daemon() {
     tailscale) bind="$NI_PUBLIC_HOST" ;;
     local)     bind=0.0.0.0 ;;
   esac
-  tmpl_daemon_config "$bind" "$tokens" "$src" >"$cfg.tmp"
+  tmpl_daemon_config "$bind" "$devices" "$src" "$codes" >"$cfg.tmp"
   chown "$NI_USER:" "$cfg.tmp"; chmod 600 "$cfg.tmp"; mv -f "$cfg.tmp" "$cfg"
 
   # 4. Service.
@@ -541,8 +543,8 @@ step_finish() {
     chmod 755 /etc/update-motd.d/99-nicode
   fi
 
-  # The answers file from cloud-init held the initial token; the app rotates it after setup anyway.
-  if [[ -n "${NI_CONFIG_FILE:-}" && -f "$NI_CONFIG_FILE" ]] && grep -q '^NICODE_TOKEN=' "$NI_CONFIG_FILE"; then
+  # Remove the cloud-init answers file once used (it holds only public values now, but keep /root tidy).
+  if [[ -n "${NI_CONFIG_FILE:-}" && -f "$NI_CONFIG_FILE" ]] && grep -q '^NICODE_' "$NI_CONFIG_FILE"; then
     shred -u "$NI_CONFIG_FILE" 2>/dev/null || rm -f "$NI_CONFIG_FILE"
   fi
 
@@ -558,9 +560,16 @@ finish_summary() {
   printf '  User:       %s   projects: %s\n' "$NI_USER" "$NI_PROJECTS_ROOT"
   printf '  Log:        %s\n' "$NI_LOG_FILE"
   printf '  Manage:     nicode status | doctor | login | logs | update\n'
-  if [[ -f "$NI_TMP/pair_token" ]]; then
+  local cfg="$NI_USER_HOME/.config/nicode/config.json" phones=0
+  if [[ "$NI_DAEMON_INSTALLED" == 1 && -f "$cfg" ]]; then
+    phones="$(jq '[(.devices // [])[] | select(.publicKey)] | length' "$cfg" 2>/dev/null || echo 0)"
     echo
-    /usr/local/bin/nicode _pair-print "$(cat "$NI_TMP/pair_token")" || true
+    if (( phones == 0 )); then
+      # No phone yet: show a one-time pairing code (single use, expires in 10 minutes).
+      /usr/local/bin/nicode pair "phone" || true
+    else
+      printf '  Paired phones: %s. Add another with: nicode pair\n' "$phones"
+    fi
   fi
   case "$state" in
     base_ready)         printf '\n  Next: once server/ is published, run  sudo nicode update  (installs the daemon).\n' ;;
@@ -1234,7 +1243,7 @@ server {
 EOF
 }
 
-# tmpl_daemon_config <bindHost> <tokens json array> <source dir>
+# tmpl_daemon_config <bindHost> <devices json> <source dir> <pairing codes json>
 tmpl_daemon_config() {
   local h="$NI_USER_HOME"
   cat <<EOF
@@ -1242,7 +1251,8 @@ tmpl_daemon_config() {
   "version": 1,
   "bindHost": "$(json_escape "$1")",
   "port": ${NI_PORT},
-  "tokens": $2,
+  "devices": $2,
+  "pairingCodes": ${4:-[]},
   "transport": "$(json_escape "$NICODE_TRANSPORT")",
   "publicHost": "$(json_escape "${NI_PUBLIC_HOST:-}")",
   "user": "$(json_escape "$NI_USER")",
@@ -1484,73 +1494,122 @@ endpoint() {  # prints "<scheme> <host> <port>"
   esac
 }
 
-pairing_uri() {
-  local scheme host port
-  read -r scheme host port < <(endpoint)
-  printf 'nicode://pair?h=%s&p=%s&s=%s&t=%s&n=%s' "$host" "$port" "$scheme" "$1" "$(hostname)"
-}
-
-cmd_pair_print() {
-  local uri; uri="$(pairing_uri "$1")"
-  echo "Scan in the niCode app (Add server → Scan QR):"
-  command -v qrencode >/dev/null && qrencode -t ansiutf8 "$uri"
-  echo "Or enter manually:"
-  printf '  host:  %s\n  token: %s\n  uri:   %s\n' "$(cfg .publicHost)" "$1" "$uri"
-}
+# jq helpers shared by the device commands. Older configs named the device list "tokens".
+JQ_DEFS='def devs: (.devices // .tokens // []);
+def ts: (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601);
+def live: map(select(.publicKey != null or (.expiresAt != null and (.expiresAt | ts) > now)));'
 
 # Writes the config atomically, keeping owner + mode 600.
 config_update() {  # config_update <jq filter> [jq args...]
   local filter="$1"; shift
   local tmp; tmp="$(mktemp "$CONFIG.XXXX")"
-  jq "$@" "$filter" "$CONFIG" >"$tmp"
+  jq "$@" "$JQ_DEFS $filter | del(.tokens)" "$CONFIG" >"$tmp"
   chmod 600 "$tmp"; chown "$NI_USER:" "$tmp"; mv -f "$tmp" "$CONFIG"
 }
 
-reload_daemon() { have_service && systemctl reload-or-restart nicode >/dev/null 2>&1 || true; }
+# The daemon re-reads devices on SIGHUP (ExecReload); no restart, open sessions stay up.
+reload_daemon() { have_service && systemctl reload nicode >/dev/null 2>&1 || true; }
 
-# ── Tokens: one per paired device ───────────────────────────────────────────
+need_config() { [[ -f "$CONFIG" ]] || { echo "niCode daemon is not installed yet (no $CONFIG). Run: sudo nicode update" >&2; exit 1; }; }
+
+# 10 characters of Crockford base32 (no I/L/O/U), shown as XXXXX-XXXXX. ~50 bits, single use, 10 min.
+gen_code() {
+  local alphabet=0123456789ABCDEFGHJKMNPQRSTVWXYZ c="" b
+  for b in $(od -An -N10 -tu1 /dev/urandom); do c+="${alphabet:$((b % 32)):1}"; done
+  printf '%s-%s' "${c:0:5}" "${c:5:5}"
+}
+
+# ── Pairing a phone: one-time code → the app registers its hardware public key ──
+cmd_pair() {
+  need_root; need_config
+  local name="" json=false a
+  for a in "$@"; do
+    case "$a" in --json) json=true ;; *) [[ -z "$name" ]] && name="$a" ;; esac
+  done
+  local code hash expires scheme host port uri
+  code="$(gen_code)"
+  hash="$(printf '%s' "${code//-/}" | sha256sum | cut -d' ' -f1)"
+  expires="$(date -u -d '+10 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+  config_update '.pairingCodes = (((.pairingCodes // []) | map(select((.expiresAt | ts) > now))) + [{sha256: $h, name: $n, expiresAt: $e}]) | .devices = devs' \
+    --arg h "$hash" --arg n "$name" --arg e "$expires"
+  reload_daemon
+  read -r scheme host port < <(endpoint)
+  uri="$(printf 'nicode://pair?h=%s&p=%s&s=%s&c=%s&n=%s' "$host" "$port" "$scheme" "$code" "$(hostname)")"
+  if [[ "$json" == true ]]; then
+    jq -n --arg code "$code" --arg scheme "$scheme" --arg host "$host" --argjson port "$port" --arg uri "$uri" --arg e "$expires" \
+      '{code:$code, scheme:$scheme, host:$host, port:$port, uri:$uri, expiresAt:$e}'
+    return
+  fi
+  echo "Pair a phone: open the niCode app → Add server → Scan QR"
+  command -v qrencode >/dev/null && qrencode -t ansiutf8 "$uri"
+  printf '  or enter:  host %s   code %s\n' "$host" "$code"
+  printf '  The code works once and expires at %s (in 10 minutes).\n' "$expires"
+  echo   '  It is safe if this screen is seen later: an expired or used code is useless.'
+}
+
+# ── Short-lived tokens for the browser test console ────────────────────────────
+parse_duration() {  # 30m | 1h | 7d → seconds (max 30 days)
+  local v="$1" n unit
+  [[ "$v" =~ ^([0-9]+)([mhd])$ ]] || { echo "Use a duration like 30m, 1h or 7d" >&2; exit 2; }
+  n="${BASH_REMATCH[1]}"; unit="${BASH_REMATCH[2]}"
+  case "$unit" in m) n=$((n * 60)) ;; h) n=$((n * 3600)) ;; d) n=$((n * 86400)) ;; esac
+  (( n > 0 && n <= 2592000 )) || { echo "Expiry must be between 1 minute and 30 days" >&2; exit 2; }
+  echo "$n"
+}
+
 cmd_token_add() {
-  need_root
-  local name="${1:-device}" token hash id
-  [[ "$name" == --json ]] && name=device
-  [[ -f "$CONFIG" ]] || { echo "niCode daemon not installed (no $CONFIG)" >&2; exit 1; }
+  need_root; need_config
+  local name="" expires_in=3600 json=false
+  while (($#)); do
+    case "$1" in
+      --json) json=true ;;
+      --expires) expires_in="$(parse_duration "${2:-}")"; shift ;;
+      *) [[ -z "$name" ]] && name="$1" ;;
+    esac
+    shift
+  done
+  name="${name:-browser}"
+  local token hash id expires
   token="$(openssl rand -hex 32)"
   hash="$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)"
   id="d_$(openssl rand -hex 4)"
-  config_update '.tokens = ((.tokens // []) + [{id: $id, name: $n, sha256: $h, createdAt: (now|todate)}])' \
-    --arg id "$id" --arg n "$name" --arg h "$hash"
+  expires="$(date -u -d "+${expires_in} seconds" +%Y-%m-%dT%H:%M:%SZ)"
+  config_update '.devices = ((devs | live) + [{id: $id, name: $n, sha256: $h, createdAt: (now|todate), expiresAt: $e}])' \
+    --arg id "$id" --arg n "$name" --arg h "$hash" --arg e "$expires"
   reload_daemon
-  if has_flag --json "$@"; then
-    local scheme host port
-    read -r scheme host port < <(endpoint)
-    jq -n --arg id "$id" --arg name "$name" --arg token "$token" --arg scheme "$scheme" \
-      --arg host "$host" --argjson port "$port" --arg uri "$(pairing_uri "$token")" \
-      '{id:$id, name:$name, token:$token, scheme:$scheme, host:$host, port:$port, uri:$uri}'
-  else
-    echo "Added device \"$name\" ($id)."
-    cmd_pair_print "$token"
+  if [[ "$json" == true ]]; then
+    jq -n --arg id "$id" --arg name "$name" --arg token "$token" --arg e "$expires" '{id:$id, name:$name, token:$token, expiresAt:$e}'
+    return
   fi
+  echo "Browser token \"$name\" ($id), valid until $expires:"
+  echo "  $token"
+  echo "Use it in server/scripts/test-client.html. Phones should use: nicode pair"
 }
 
 cmd_token_list() {
-  need_root
-  if has_flag --json "$@"; then jq '[.tokens // [] | .[] | {id, name, createdAt}]' "$CONFIG"; return; fi
-  jq -r '(.tokens // [])[] | "\(.id)\t\(.createdAt)\t\(.name)"' "$CONFIG" | column -t -s $'\t'
+  need_root; need_config
+  if has_flag --json "$@"; then
+    jq "$JQ_DEFS"' [devs[] | {id, name, createdAt, kind: (if .publicKey then "key" else "token" end), expiresAt}]' "$CONFIG"
+    return
+  fi
+  jq -r "$JQ_DEFS"' devs[] | [.id,
+      (if .publicKey then "phone (\(.alg) key)" elif .expiresAt == null then "LEGACY token — disabled" elif (.expiresAt | ts) <= now then "browser token — expired" else "browser token" end),
+      (.expiresAt // "-"), .name] | @tsv' "$CONFIG" | column -t -s $'\t'
 }
 
 cmd_token_revoke() {
-  need_root
+  need_root; need_config
   local key="${1:?usage: nicode token revoke <id|name>}"
-  config_update '.tokens = [(.tokens // [])[] | select(.id != $k and .name != $k)]' --arg k "$key"
+  config_update '.devices = [devs[] | select(.id != $k and .name != $k)]' --arg k "$key"
   reload_daemon
-  echo "Revoked $key. That device must pair again."
+  echo "Revoked $key. Its open connections were closed; it must pair again to reconnect."
 }
 
-cmd_token_rotate() {  # revoke everything, issue one new token
-  need_root
-  config_update '.tokens = []'
-  echo "All device tokens revoked."
-  cmd_token_add "${1:-device}"
+cmd_token_revoke_all() {
+  need_root; need_config
+  config_update '.devices = [] | .pairingCodes = []'
+  reload_daemon
+  echo "All devices revoked. Pair again with: nicode pair"
 }
 
 # ── Status ──────────────────────────────────────────────────────────────────
@@ -1583,7 +1642,9 @@ cmd_status() {
   printf 'Claude:    %s\n' "${claude_ver:-not installed}"
   if [[ "$claude_ok" == true ]]; then echo 'Login:     Claude ✓'; else echo 'Login:     Claude ✗  (run: nicode login)'; fi
   if [[ "$gh_ok" == true ]]; then echo 'GitHub:    ✓'; else echo 'GitHub:    ✗  (log in from the app, or: gh auth login)'; fi
-  printf 'Devices:   %s paired\n' "$(jq '(.tokens // []) | length' "$CONFIG" 2>/dev/null || echo 0)"
+  printf 'Devices:   %s phone(s), %s active browser token(s)  (nicode token list)\n' \
+    "$(jq "$JQ_DEFS"' [devs[] | select(.publicKey)] | length' "$CONFIG" 2>/dev/null || echo 0)" \
+    "$(jq "$JQ_DEFS"' [devs | live | .[] | select(.publicKey == null)] | length' "$CONFIG" 2>/dev/null || echo 0)"
 }
 
 cmd_motd() {
@@ -1653,11 +1714,12 @@ usage() {
 nicode — manage this niCode host
 
   status [--json]            Daemon, endpoint, Claude/GitHub login state, paired devices
-  pair [name]                Pair a new phone: new device token + QR (other devices keep working)
-  token add <name> [--json]  Same as pair; --json is what the app reads over SSH
-  token list [--json]        Paired devices
-  token revoke <id|name>     Unpair one device
-  token rotate               Revoke ALL devices and issue one new token
+  pair [name] [--json]       Pair a phone: one-time code + QR (single use, expires in 10 min)
+  token add [name] [--expires 1h] [--json]
+                             Short-lived token for the browser test console (max 30d)
+  token list [--json]        Paired phones and browser tokens
+  token revoke <id|name>     Unpair one device (its open connections close immediately)
+  token revoke-all           Unpair everything
   login [--force]            Log Claude Code in (skipped if already logged in)
   doctor                     Re-detect the host and show what the installer would change
   logs [-f]                  Daemon logs
@@ -1672,17 +1734,16 @@ case "${1:-help}" in
   motd)      cmd_motd ;;
   doctor)    need_root; bash "$INSTALLER" --dry-run ;;
   login)     shift; cmd_login "$@" ;;
-  pair)      shift; cmd_token_add "${1:-$(hostname)-device}" ;;
+  pair)      shift; cmd_pair "$@" ;;
   token)
     sub="${2:-}"; shift 2 || true
     case "$sub" in
       add)    cmd_token_add "$@" ;;
       list)   cmd_token_list "$@" ;;
       revoke) cmd_token_revoke "$@" ;;
-      rotate) cmd_token_rotate "$@" ;;
+      revoke-all) cmd_token_revoke_all ;;
       *)      usage; exit 2 ;;
     esac ;;
-  _pair-print) cmd_pair_print "$2" ;;
   logs)      shift; journalctl -u nicode --no-pager -n 200 "$@" ;;
   restart)   need_root; systemctl restart nicode; echo restarted ;;
   update)    cmd_update ;;
@@ -1700,7 +1761,7 @@ NICODE_CLI_EOF
 #
 #   sudo bash nicode-install.sh                 # guided: detect → review → install
 #   sudo bash nicode-install.sh --dry-run       # show what was detected and what would happen
-#   sudo bash nicode-install.sh --unattended --stage full --token <t> --setup-id <id>   # app / cloud-init
+#   sudo bash nicode-install.sh --unattended --stage full --device-key RS256:<base64> --setup-id <id>   # app / cloud-init
 #
 # Docs: docs/01-INSTALLER.md
 
@@ -1728,7 +1789,8 @@ Options
   --stage base|full      base = tools only; full = + niCode daemon (default: full)
   --transport T          https | tailscale | local   (default: auto-detected)
   --domain NAME          Use your own domain instead of <ip>.sslip.io (A record must point here)
-  --token HEX            Daemon token chosen by the app (else generated and shown as a QR)
+  --device-key ALG:B64   The app's PUBLIC key (RS256|ES256|Ed25519) to pre-pair a phone; no secret involved.
+                         Without it, a one-time pairing QR is shown at the end (or run: nicode pair)
   --setup-id ID          Id that guards /setup/status (else generated)
   --user NAME            Developer user (default: auto-detected — reuses whoever is already
                          logged in to Claude, including root — else "dev")
@@ -1736,7 +1798,7 @@ Options
   --projects-root DIR    Folder holding your repos (default: auto-detected, else ~/projects)
   --host-mode M          fresh | existing (default: auto). existing = add niCode only; no apt upgrade,
                          SSH/firewall/swap/system-Node changes
-  --device-name NAME     Name for the device token supplied with --token (shown in `nicode token list`)
+  --device-name NAME     Name for the --device-key phone (shown in `nicode token list`)
   --port N               Daemon port on localhost (default: first free from 7878)
   --repo URL --ref REF   Where to fetch niCode from (default: settings / built-in)
   --source-dir DIR       Use a local niCode checkout instead of cloning (development)
@@ -1764,7 +1826,8 @@ while (($#)); do
     --stage)         NI_ARGS[NICODE_STAGE]="$2"; shift ;;
     --transport)     NI_ARGS[NICODE_TRANSPORT]="$2"; shift ;;
     --domain)        NI_ARGS[NICODE_DOMAIN]="$2"; shift ;;
-    --token)         NI_ARGS[NICODE_TOKEN]="$2"; shift ;;
+    --device-key)    NI_ARGS[NICODE_DEVICE_PUBKEY]="$2"; shift ;;
+    --token)         echo "--token was removed: phones pair with a one-time code (nicode pair) or --device-key" >&2; exit 2 ;;
     --setup-id)      NI_ARGS[NICODE_SETUP_ID]="$2"; shift ;;
     --user)          NI_ARGS[NICODE_USER]="$2"; shift ;;
     --no-root)       NI_ARGS[NICODE_NO_ROOT]=1 ;;

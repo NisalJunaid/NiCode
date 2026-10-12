@@ -2,7 +2,7 @@
 
 > **Audience:** Claude Code, building `server/` from scratch (run it in WSL; see [03](03-LOCAL-DEV-SETUP.md)). Read [00-OVERVIEW](00-OVERVIEW.md) and [05-PROTOCOL](05-PROTOCOL.md) first. The protocol types in [protocol/types.ts](../protocol/types.ts) are the contract. Import them; don't redefine them.
 
-## Implementation status (v0.1.0)
+## Implementation status (v0.2.0)
 `server/` implements M1–M7, plus the systemd and reverse-proxy wiring from M8. It is tested on Windows with `npm test`: unit tests, a real daemon over WebSocket, the permission bridge, and Claude sessions driven by `test/fake-claude.mjs`, a stand-in CLI that speaks stream-json. Terminals (tmux) and the symlink guard are only exercised on Linux. Where the code differs from the plan below:
 - **No `@modelcontextprotocol/sdk`, `expo-server-sdk` or `simple-git`.**
   - The approve tool is a ~100-line stdio MCP server (`src/mcp/approve-server.ts`). It fails closed: anything unexpected becomes a deny.
@@ -64,7 +64,7 @@ server/
     modules/
       server.ts           # server.info
       setup.ts            # claudeLogin.*, github.*
-      devices.ts          # auth.rotate (calling device only), auth.devices, auth.revoke, auth.renameDevice
+      (server.ts)         # auth.devices, auth.revoke, auth.renameDevice
       projects.ts         # list/clone/create/githubRepos
       fs.ts               # list/read/write/rename/delete/search + watcher
       git.ts              # simple-git wrappers
@@ -102,7 +102,7 @@ server/
   "appDir": "/opt/nicode"
 }
 ```
-- Every config write (rotate, revoke, rename) is atomic: tmp file + rename, keeping mode 600 and the owner.
+- Every config write (pair, revoke, rename) is atomic: tmp file + rename, keeping mode 600 and the owner.
 - **Reload:** on SIGHUP (`ExecReload` in the unit, used by `nicode token add/revoke`) and on `fs.watch` of the config file, re-read `tokens`, and close sockets whose device no longer exists (WebSocket close code 4401).
 - The env file is also loaded by systemd. When the daemon writes a new token there, it also sets `process.env` so child processes get it without a restart.
 
@@ -238,7 +238,7 @@ Before writing, append and broadcast the daemon marker `{"type":"nicode","subtyp
 | # | Build | Acceptance |
 |---|---|---|
 | M1 | config, log, http `/health`, ws auth + backoff, rpc core, `server.info`, status.ts | `curl /health` → ok. `test-client.html` connects with the token and gets `server.info`. A wrong token → 401. Unit tests: auth, rpc validation |
-| M2 | setup module (Claude + GitHub login, setToken, auth.rotate) | From test-client: start → URL shown → paste code → `status.json` state becomes `ready`, `claude -p` works as the user. Rotate → the old token is rejected and other devices stay connected; `nicode token add x` → the new token works without a restart; revoke → that socket closes with 4401. A server already logged in via `claude /login` starts as `ready` |
+| M2 | setup module (Claude + GitHub login, setToken); device auth (`/pair`, `/auth/challenge`, signed login, expiring browser tokens) | From test-client: start → URL shown → paste code → `status.json` state becomes `ready`. Pairing with a one-time code; a replayed signature, a used or expired code, or a legacy permanent token → 401; revoke → that socket closes with 4401. A server already logged in via `claude /login` starts as `ready` |
 | M3 | terminals | test-client xterm: open, run `htop`, resize, reload the page → attach replays. Restart the daemon → `term.list` shows the tmux session |
 | M4 | Claude sessions (no permission tool yet: `--permission-mode acceptEdits`) | start → streamed events; send a second turn; interrupt; kill the process → the next send resumes with history intact; `claude.history` paging |
 | M5 | permission bridge + remember rules | Mode `default`: an Edit triggers `permission.request`; allow → the file changes; deny with a message → Claude acknowledges; the 10-min timeout denies (test with a 5 s override) |

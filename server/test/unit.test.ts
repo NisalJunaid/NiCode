@@ -2,22 +2,56 @@ import { mkdtemp, mkdir, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { Backoff, findDevice, sha256Hex } from '../src/auth.js';
+import { generateKeyPairSync, type KeyObject, sign as cryptoSign } from 'node:crypto';
+import { authMessage, Backoff, ChallengeStore, findTokenDevice, normalizeCode, sha256Hex, verifyDeviceSignature } from '../src/auth.js';
 import { parseStatus } from '../src/modules/git.js';
 import { resolveInProject, resolveProject } from '../src/paths.js';
 import { RpcError } from '../src/rpc.js';
 import { LineSplitter } from '../src/util/exec.js';
 
 describe('auth', () => {
-  const tokens = [
-    { id: 'd_1', name: 'phone', sha256: sha256Hex('aaa'), createdAt: '' },
-    { id: 'd_2', name: 'tablet', sha256: sha256Hex('bbb'), createdAt: '' },
+  const hour = 3600_000;
+  const devices = [
+    { id: 'd_1', name: 'browser', sha256: sha256Hex('aaa'), createdAt: '', expiresAt: new Date(Date.now() + hour).toISOString() },
+    { id: 'd_2', name: 'old', sha256: sha256Hex('bbb'), createdAt: '', expiresAt: new Date(Date.now() - 1000).toISOString() },
+    { id: 'd_3', name: 'legacy permanent', sha256: sha256Hex('ccc'), createdAt: '' },
   ];
-  it('finds the matching device', () => {
-    expect(findDevice(tokens, 'bbb')?.id).toBe('d_2');
-    expect(findDevice(tokens, 'nope')).toBeNull();
-    expect(findDevice(tokens, undefined)).toBeNull();
+  it('accepts only unexpired tokens that have an expiry', () => {
+    expect(findTokenDevice(devices, 'aaa')?.id).toBe('d_1');
+    expect(findTokenDevice(devices, 'bbb')).toBeNull(); // expired
+    expect(findTokenDevice(devices, 'ccc')).toBeNull(); // legacy, no expiry
+    expect(findTokenDevice(devices, undefined)).toBeNull();
   });
+
+  it.each([
+    ['Ed25519', () => generateKeyPairSync('ed25519'), (k: KeyObject) => (k.export({ format: 'der', type: 'spki' }) as Buffer).subarray(-32).toString('base64'), null],
+    ['RS256 (SPKI)', () => generateKeyPairSync('rsa', { modulusLength: 2048 }), (k: KeyObject) => (k.export({ format: 'der', type: 'spki' }) as Buffer).toString('base64'), 'sha256'],
+    ['RS256 (PKCS#1, iOS)', () => generateKeyPairSync('rsa', { modulusLength: 2048 }), (k: KeyObject) => (k.export({ format: 'der', type: 'pkcs1' }) as Buffer).toString('base64'), 'sha256'],
+    ['ES256', () => generateKeyPairSync('ec', { namedCurve: 'P-256' }), (k: KeyObject) => (k.export({ format: 'der', type: 'spki' }) as Buffer).toString('base64'), 'sha256'],
+  ] as const)('verifies %s signatures and rejects tampering', (label, gen, exportPub, hash) => {
+    const { publicKey, privateKey } = gen();
+    const alg = label.startsWith('RS') ? 'RS256' : label === 'ES256' ? 'ES256' : 'Ed25519';
+    const device = { id: 'd_k', name: 'phone', createdAt: '', alg, publicKey: exportPub(publicKey) } as const;
+    const msg = authMessage('nonce123', 'd_k');
+    const sig = cryptoSign(hash, Buffer.from(msg), privateKey).toString('base64');
+    expect(verifyDeviceSignature({ ...device }, msg, sig)).toBe(true);
+    expect(verifyDeviceSignature({ ...device }, authMessage('other', 'd_k'), sig)).toBe(false);
+    expect(verifyDeviceSignature({ ...device }, msg, Buffer.from('nope').toString('base64'))).toBe(false);
+  });
+
+  it('issues single-use, expiring challenges', () => {
+    const store = new ChallengeStore(1000);
+    const { nonce } = store.issue(0);
+    expect(store.consume(nonce, 10)).toBe(true);
+    expect(store.consume(nonce, 10)).toBe(false); // replay
+    const late = store.issue(0).nonce;
+    expect(store.consume(late, 5000)).toBe(false); // expired
+  });
+
+  it('normalizes hand-typed pairing codes', () => {
+    expect(normalizeCode(' abcde-fghjk ')).toBe('ABCDEFGHJK');
+  });
+
   it('backs off after 5 failures', () => {
     const b = new Backoff();
     for (let i = 0; i < 5; i++) b.fail('1.2.3.4', 0);

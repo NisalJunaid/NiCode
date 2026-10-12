@@ -1,9 +1,10 @@
 import { watch } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
+import path from 'node:path';
 import { app } from './app.js';
 import { configPath, loadConfig } from './config.js';
 import { events } from './events.js';
-import { applyTokenChange, closeAllClients, startHttpServer } from './http.js';
+import { applyDeviceChange, closeAllClients, startHttpServer } from './http.js';
 import { log } from './log.js';
 import { initClaudeModule, registerClaudeModule, shutdownClaude } from './modules/claude.js';
 import { registerFsModule } from './modules/fs.js';
@@ -38,19 +39,24 @@ async function main(): Promise<void> {
 
   const server = startHttpServer();
 
-  // Device tokens change via `nicode token add/revoke` (SIGHUP) or edits to the config file.
+  // Devices and pairing codes change via `nicode pair` / `nicode token …` (SIGHUP) or config edits.
   const reloadTokens = () => {
     try {
-      app.config.tokens = loadConfig(cfgPath).tokens;
-      applyTokenChange();
-      log.info({ devices: app.config.tokens.length }, 'device tokens reloaded');
+      const fresh = loadConfig(cfgPath);
+      app.config.devices = fresh.devices;
+      app.config.pairingCodes = fresh.pairingCodes;
+      applyDeviceChange();
+      log.info({ devices: app.config.devices.length, pairingCodes: app.config.pairingCodes.length }, 'devices reloaded');
     } catch (err) {
       log.warn({ err }, 'could not reload config');
     }
   };
   let debounce: NodeJS.Timeout | null = null;
   try {
-    watch(cfgPath, () => {
+    // Watch the folder, not the file: the CLI replaces config.json atomically (new inode), which
+    // would silently detach a file watcher after the first change.
+    watch(path.dirname(cfgPath), (_evt, file) => {
+      if (file && String(file) !== path.basename(cfgPath)) return;
       if (debounce) clearTimeout(debounce);
       debounce = setTimeout(reloadTokens, 200);
     });

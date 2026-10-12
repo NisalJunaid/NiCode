@@ -3,7 +3,7 @@
  * Human-readable spec: docs/05-PROTOCOL.md. Keep both in sync; bump PROTOCOL_VERSION on breaking changes.
  */
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Frames
@@ -108,6 +108,10 @@ export interface DeviceInfo {
   id: string;
   name: string;
   createdAt: string;
+  /** 'key' = phone with a hardware key (signs every login); 'token' = expiring browser token. */
+  kind: 'key' | 'token';
+  /** Token devices only. */
+  expiresAt?: string;
 }
 
 export interface Project {
@@ -211,8 +215,6 @@ export interface Methods {
   'setup.claudeLogin.setToken': [{ token: string }, { ok: true }];   // manual fallback
   'setup.github.start': [Record<string, never>, { loginId: string; userCode: string; verificationUrl: string }];
   'setup.github.poll': [{ loginId: string }, { state: 'pending' | 'done' | 'failed'; login?: string; error?: string }];
-  /** Replaces the CALLING device's token only; other paired devices keep working. */
-  'auth.rotate': [Record<string, never>, { token: string }];
   'auth.devices': [Record<string, never>, (DeviceInfo & { current: boolean })[]];
   'auth.revoke': [{ id: string }, { ok: true }];
   'auth.renameDevice': [{ id: string; name: string }, { ok: true }];
@@ -304,15 +306,61 @@ export type EventName = keyof Events;
 export type EventData<E extends EventName> = Events[E];
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Pairing URI (installer QR / `nicode pair`):
-//   nicode://pair?h=<host>&p=<port>&s=<https|http>&t=<token>&n=<display name>
+// Pairing & login (HTTP, before the WebSocket) — see docs/05-PROTOCOL.md "Authentication".
+//
+//   QR / link from `nicode pair`:
+//     nicode://pair?h=<host>&p=<port>&s=<https|http>&c=<one-time code>&n=<server name>
+//   1. POST {base}/pair            PairRequest → PairResponse   (code is single-use, 10 min)
+//   2. GET  {base}/auth/challenge  → Challenge                   (nonce is single-use, 60 s)
+//   3. WebSocket {base}/ws with
+//        Authorization: Signature deviceId="<id>", nonce="<nonce>", sig="<base64 signature>"
+//      signing the UTF-8 bytes of authMessage(nonce, deviceId).
 // ─────────────────────────────────────────────────────────────────────────────
+
+export type KeyAlg = 'RS256' | 'ES256' | 'Ed25519';
+
+export interface PairRequest {
+  code: string;
+  deviceName: string;
+  alg: KeyAlg;
+  /** base64 DER (SPKI, or PKCS#1 for RSA), raw 32-byte Ed25519, raw 65-byte P-256, or PEM. */
+  publicKey: string;
+}
+
+export interface PairResponse {
+  deviceId: string;
+  deviceName: string;
+  hostname: string;
+  publicHost: string | null;
+}
+
+export interface Challenge {
+  nonce: string;
+  expiresAt: string;
+}
+
+/** The exact string a device signs to log in (must match the daemon's server/src/auth.ts). */
+export function authMessage(nonce: string, deviceId: string): string {
+  return `nicode-auth:v1:${nonce}:${deviceId}`;
+}
+
+/**
+ * A phone's device id is derived from its public key: "d_" + the first 8 hex chars of
+ * sha256(publicKey) (the exact base64/PEM text sent to /pair or put in NICODE_DEVICE_PUBKEY).
+ * The app computes it with expo-crypto; the daemon and installer derive the same value.
+ */
+export const DEVICE_ID_RULE = 'd_ + sha256hex(publicKey).slice(0, 8)';
+
+export function signatureHeader(deviceId: string, nonce: string, sigBase64: string): string {
+  return `Signature deviceId="${deviceId}", nonce="${nonce}", sig="${sigBase64}"`;
+}
 
 export interface PairingInfo {
   host: string;
   port: number;
   scheme: 'https' | 'http';
-  token: string;
+  /** One-time pairing code. */
+  code: string;
   name: string;
 }
 
@@ -325,16 +373,22 @@ export function parsePairingUri(uri: string): PairingInfo | null {
     if (k) q.set(decodeURIComponent(k), decodeURIComponent(v));
   }
   const host = q.get('h');
-  const token = q.get('t');
-  if (!host || !token) return null;
+  const code = q.get('c');
+  if (!host || !code) return null;
   const scheme = q.get('s') === 'http' ? 'http' : 'https';
   return {
     host,
-    token,
+    code,
     scheme,
     port: Number(q.get('p') ?? (scheme === 'https' ? 443 : 7878)),
     name: q.get('n') ?? host,
   };
+}
+
+/** https://host[:port] — base for /pair, /auth/challenge, /health. */
+export function baseUrl(p: Pick<PairingInfo, 'host' | 'port' | 'scheme'>): string {
+  const defaultPort = p.scheme === 'https' ? 443 : 80;
+  return `${p.scheme}://${p.host}${p.port === defaultPort ? '' : `:${p.port}`}`;
 }
 
 /** Builds the WebSocket URL for a paired host. */

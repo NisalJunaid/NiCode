@@ -2,20 +2,39 @@ import { readFileSync } from 'node:fs';
 import { chmod, readFile, rename, writeFile } from 'node:fs/promises';
 import { z } from 'zod';
 
-/** Schema of $NICODE_CONFIG, written by the installer (installer/lib/templates.sh → tmpl_daemon_config). */
-export const DeviceTokenSchema = z.object({
+/**
+ * A paired device. Phones are `key` devices: a public key from the phone's secure hardware,
+ * used to verify a fresh signature on every connection. `token` devices are short-lived bearer
+ * tokens for the browser test console (`nicode token add --expires`). Token entries without an
+ * expiry are legacy permanent tokens and are ignored.
+ */
+export const DeviceSchema = z.object({
   id: z.string(),
   name: z.string(),
-  sha256: z.string(),
   createdAt: z.string(),
+  // key devices
+  alg: z.enum(['RS256', 'ES256', 'Ed25519']).optional(),
+  publicKey: z.string().optional(),
+  // token devices
+  sha256: z.string().optional(),
+  expiresAt: z.string().optional(),
 });
-export type DeviceToken = z.infer<typeof DeviceTokenSchema>;
+export type Device = z.infer<typeof DeviceSchema>;
+
+/** One-time pairing codes created by `nicode pair` (stored hashed, consumed on use). */
+export const PairingCodeSchema = z.object({
+  sha256: z.string(),
+  name: z.string().default(''),
+  expiresAt: z.string(),
+});
+export type PairingCode = z.infer<typeof PairingCodeSchema>;
 
 export const ConfigSchema = z.object({
   version: z.literal(1),
   bindHost: z.string(),
   port: z.number().int(),
-  tokens: z.array(DeviceTokenSchema).default([]),
+  devices: z.array(DeviceSchema).default([]),
+  pairingCodes: z.array(PairingCodeSchema).default([]),
   transport: z.enum(['https', 'tailscale', 'local']),
   publicHost: z.string().default(''),
   user: z.string(),
@@ -29,6 +48,15 @@ export const ConfigSchema = z.object({
 });
 export type Config = z.infer<typeof ConfigSchema>;
 
+/** Older configs called the device list `tokens`. */
+function migrate(raw: Record<string, unknown>): Record<string, unknown> {
+  if (raw.devices === undefined && Array.isArray(raw.tokens)) {
+    raw.devices = raw.tokens;
+  }
+  delete raw.tokens;
+  return raw;
+}
+
 export function configPath(): string {
   const p = process.env.NICODE_CONFIG;
   if (!p) throw new Error('NICODE_CONFIG is not set (path to config.json)');
@@ -36,7 +64,7 @@ export function configPath(): string {
 }
 
 export function loadConfig(path = configPath()): Config {
-  return ConfigSchema.parse(JSON.parse(readFileSync(path, 'utf8')));
+  return ConfigSchema.parse(migrate(JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>));
 }
 
 /** Atomic write keeping mode 600 (we run as the file's owner, so ownership is preserved). */
@@ -47,14 +75,31 @@ export async function writeFileAtomic(path: string, content: string, mode = 0o60
   await rename(tmp, path);
 }
 
-/** Read-modify-write of the device token list, always against the latest file on disk. */
-export async function updateTokens(mutate: (tokens: DeviceToken[]) => DeviceToken[], path = configPath()): Promise<DeviceToken[]> {
-  const raw = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
-  const current = z.array(DeviceTokenSchema).parse(raw.tokens ?? []);
-  const next = mutate(current);
-  raw.tokens = next;
-  await writeFileAtomic(path, JSON.stringify(raw, null, 2) + '\n');
-  return next;
+let configWrite: Promise<unknown> = Promise.resolve();
+
+/**
+ * Read-modify-write of the device list and pairing codes, always against the latest file on
+ * disk (the `nicode` CLI edits it too). Writes are serialized within the daemon.
+ */
+export function updateDevices(
+  mutate: (state: { devices: Device[]; pairingCodes: PairingCode[] }) => { devices: Device[]; pairingCodes: PairingCode[] },
+  path = configPath(),
+): Promise<{ devices: Device[]; pairingCodes: PairingCode[] }> {
+  const run = async () => {
+    const raw = migrate(JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>);
+    const current = {
+      devices: z.array(DeviceSchema).parse(raw.devices ?? []),
+      pairingCodes: z.array(PairingCodeSchema).parse(raw.pairingCodes ?? []),
+    };
+    const next = mutate(current);
+    raw.devices = next.devices;
+    raw.pairingCodes = next.pairingCodes;
+    await writeFileAtomic(path, JSON.stringify(raw, null, 2) + '\n');
+    return next;
+  };
+  const p = configWrite.then(run, run);
+  configWrite = p.catch(() => undefined);
+  return p;
 }
 
 // ── env file (KEY=VALUE lines; holds CLAUDE_CODE_OAUTH_TOKEN) ──────────────────

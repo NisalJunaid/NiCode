@@ -8,21 +8,44 @@ The contract between the **daemon** (`server/`) and the **app** (`app/`). The ty
 |---|---|---|---|
 | `GET /health` | daemon | none | `{"ok":true,"version":"x.y.z","state":"ready"}`, used for liveness checks by the installer and app |
 | `GET /setup/status?sid=<setupId>` | Caddy (static file) | setup id in query | Live install progress (`SetupStatus`), readable before the daemon exists |
-| `GET /ws` (upgrade) | daemon | bearer token | Everything else |
+| `POST /pair` | daemon | one-time pairing code | Registers a phone's public key (see Authentication) |
+| `GET /auth/challenge` | daemon | none (rate-limited) | A single-use login nonce, valid for 60 s |
+| `GET /ws` (upgrade) | daemon | signed challenge (phones) or short-lived token (browser) | Everything else |
 | `POST /permission` on the **unix socket** `<dataDir>/internal.sock` | daemon | socket file mode 600, plus the `X-Nicode-Internal` secret | Used by the MCP approve tool (see 02). It isn't on the TCP port, so Caddy can never proxy it |
 
 Transport by mode: `https` → `wss://<ip-dashed>.sslip.io/ws` (Caddy terminates TLS). `local` → `ws://<lan-ip>:<port>/ws`. `tailscale` → `ws://<tailnet-ip>:<port>/ws`.
 
 ## Authentication
-- The app sends `Authorization: Bearer <token>` on the WebSocket upgrade. (React Native's `new WebSocket(url, undefined, { headers })` supports this.)
-- Browser fallback (test client only): offer the subprotocols `['nicode', 'nicode.<token>']`. The daemon reads the token from the second and selects `nicode`, so the token is never echoed back.
-- **One token per paired device.** `config.json → tokens: [{id, name, sha256, createdAt}]`. The daemon hashes the presented token and compares it in constant time against every entry. The matching entry becomes the connection's `device`, which `server.info` returns.
-- Devices are added by `nicode token add <name> [--json]` / `nicode pair` (also what the app runs over SSH, see 04), by the installer (`--token`), or by `auth.rotate`. Adding a device never affects the others.
-- The daemon re-reads `tokens` on SIGHUP (`systemctl reload nicode`) and when `config.json` changes. Sockets whose token was removed are closed with code 4401.
-- Failed auth is rejected with HTTP 401 before the upgrade. Per-IP exponential backoff applies (client IP comes from `X-Forwarded-For` **only** when the TCP peer is 127.0.0.1).
-- Tokens are 32 random bytes as hex (64 chars).
-  - `auth.rotate` replaces **only the calling device's** token and keeps its id and name; the old token stops working.
-  - `auth.devices` / `auth.revoke` / `auth.renameDevice` manage paired devices from the app.
+There are no reusable passwords for phones. Each phone holds a private key in its secure hardware (Android Keystore / iOS Secure Enclave), unlocked by fingerprint or face, and proves possession of it on **every** connection.
+
+**Pairing (once per phone)**
+1. On the server, `nicode pair [name]` creates a **one-time code** (10 characters, shown as `XXXXX-XXXXX`). It is stored hashed and expires after **10 minutes**. The command prints a QR code for `nicode://pair?h=<host>&p=<port>&s=<https|http>&c=<code>&n=<server name>`.
+2. The app scans the QR code (or the user types host and code), creates a key pair in secure hardware, and calls `POST /pair` with `PairRequest {code, deviceName, alg, publicKey}`:
+   - `alg` is `RS256` (what `react-native-biometrics` creates), `ES256`, or `Ed25519`
+   - `publicKey` is base64 DER (SPKI, or PKCS#1 for RSA on iOS), raw Ed25519/P-256 bytes, or PEM
+3. The daemon checks and **consumes** the code, then stores the device `{id, name, alg, publicKey}`. Response: `PairResponse {deviceId, deviceName, hostname, publicHost}`. A wrong or expired code returns 401 and counts towards the per-IP backoff. Re-pairing the same public key keeps the existing device record.
+
+**Login (every WebSocket connection)**
+1. `GET /auth/challenge` returns `{nonce, expiresAt}`. The nonce is random, valid for 60 s, and **single use**.
+2. The app signs the UTF-8 bytes of `authMessage(nonce, deviceId)` = `nicode-auth:v1:<nonce>:<deviceId>`. Signing unlocks the key with biometrics (RSASSA-PKCS1-v1_5/SHA-256 for RS256, ECDSA/SHA-256 for ES256 in DER or raw form, Ed25519 as-is).
+3. The app opens `/ws` with `Authorization: Signature deviceId="<id>", nonce="<nonce>", sig="<base64>"` (`signatureHeader()` in types.ts). The daemon consumes the nonce **before** verifying, so a captured header can never be replayed.
+
+**Biometric policy (app side):** a biometric prompt on app open or unlock, then a grace period of a few minutes during which reconnects sign silently. After the grace period, or when the app was backgrounded longer than that, the next connection asks again.
+
+**Browser test console only: short-lived tokens.**
+- Create one with `nicode token add <name> --expires 1h` (default 1 hour, maximum 30 days).
+- Send it as `Authorization: Bearer <token>`. Browsers can't set headers, so the console instead offers the subprotocols `['nicode', 'nicode.<token>']`; the daemon reads the token from the second and selects `nicode`, so the token is never echoed back.
+- Tokens are stored hashed. When a token expires, its sockets are closed within about 25 s.
+- **Tokens without an expiry (from older versions) are never accepted.** The installer removes them on update.
+
+**Device management**
+- `config.json → devices[]` (older configs called it `tokens`; they are migrated on load) and `pairingCodes[]`.
+- The daemon reloads both on SIGHUP (`systemctl reload nicode`, which the CLI sends) and when the config folder changes.
+- Revoking a device closes its open sockets with code 4401.
+- From the app: `auth.devices`, `auth.revoke`, `auth.renameDevice`.
+- On the server: `nicode token list | revoke <id|name> | revoke-all`.
+
+**Failures** return HTTP 401 before the upgrade. Per-IP exponential backoff starts after 5 failures (1 s up to 5 min); the client IP comes from `X-Forwarded-For` **only** when the TCP peer is 127.0.0.1. A successful login resets it.
 
 ## Frames
 All frames are UTF-8 JSON text messages.
@@ -45,7 +68,7 @@ All frames are UTF-8 JSON text messages.
 ## Setup gating
 Claude counts as logged in when the daemon's user has **either** `~/.claude/.credentials.json` (a normal `claude` → `/login`) **or** `CLAUDE_CODE_OAUTH_TOKEN` in the env file. A server that is already logged in therefore goes straight to `ready`, and the app never shows a login.
 
-While `SetupStatus.state` is `needs_claude_login`, only these methods are allowed: `server.info`, `setup.*`, `auth.rotate`, `push.register`, `projects.*`, `fs.*`, `git.*`, `term.*`. `claude.*` returns `setup_required`.
+While `SetupStatus.state` is `needs_claude_login`, only these methods are allowed: `server.info`, `setup.*`, `auth.*`, `push.register`, `projects.*`, `fs.*`, `git.*`, `term.*`. `claude.*` returns `setup_required`.
 
 ## Method notes
 (Signatures are in `types.ts`; only the non-obvious parts are listed here.)
@@ -108,9 +131,9 @@ Unknown types are shown as a collapsed "raw event" row, never as an error.
 
 ## Pairing URI
 ```
-nicode://pair?h=<host>&p=<port>&s=<https|http>&t=<token>&n=<display name>
+nicode://pair?h=<host>&p=<port>&s=<https|http>&c=<one-time code>&n=<server name>
 ```
-Produced by `nicode pair` / the installer's QR code, and parsed by `parsePairingUri()` in `types.ts`. App-provisioned servers don't need it, because the app already has the token.
+Produced by `nicode pair` and by the installer's final screen, and parsed by `parsePairingUri()` in `types.ts`. Seeing it after it was used, or after 10 minutes, gives no access. Droplets the app creates itself are pre-paired with the phone's public key through cloud-init (`NICODE_DEVICE_PUBKEY`), so no code is needed there.
 
 ## `status.json` (SetupStatus)
 Written by the installer ([installer/lib/status.sh](../installer/lib/status.sh)) during the install, and afterwards by the daemon (the file is owned by the dev user).

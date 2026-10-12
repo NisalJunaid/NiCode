@@ -4,7 +4,7 @@
 #
 #   sudo bash nicode-install.sh                 # guided: detect → review → install
 #   sudo bash nicode-install.sh --dry-run       # show what was detected and what would happen
-#   sudo bash nicode-install.sh --unattended --stage full --token <t> --setup-id <id>   # app / cloud-init
+#   sudo bash nicode-install.sh --unattended --stage full --device-key RS256:<base64> --setup-id <id>   # app / cloud-init
 #
 # Docs: docs/01-INSTALLER.md
 
@@ -32,7 +32,8 @@ Options
   --stage base|full      base = tools only; full = + niCode daemon (default: full)
   --transport T          https | tailscale | local   (default: auto-detected)
   --domain NAME          Use your own domain instead of <ip>.sslip.io (A record must point here)
-  --token HEX            Daemon token chosen by the app (else generated and shown as a QR)
+  --device-key ALG:B64   The app's PUBLIC key (RS256|ES256|Ed25519) to pre-pair a phone; no secret involved.
+                         Without it, a one-time pairing QR is shown at the end (or run: nicode pair)
   --setup-id ID          Id that guards /setup/status (else generated)
   --user NAME            Developer user (default: auto-detected — reuses whoever is already
                          logged in to Claude, including root — else "dev")
@@ -40,7 +41,7 @@ Options
   --projects-root DIR    Folder holding your repos (default: auto-detected, else ~/projects)
   --host-mode M          fresh | existing (default: auto). existing = add niCode only; no apt upgrade,
                          SSH/firewall/swap/system-Node changes
-  --device-name NAME     Name for the device token supplied with --token (shown in `nicode token list`)
+  --device-name NAME     Name for the --device-key phone (shown in `nicode token list`)
   --port N               Daemon port on localhost (default: first free from 7878)
   --repo URL --ref REF   Where to fetch niCode from (default: settings / built-in)
   --source-dir DIR       Use a local niCode checkout instead of cloning (development)
@@ -68,7 +69,8 @@ while (($#)); do
     --stage)         NI_ARGS[NICODE_STAGE]="$2"; shift ;;
     --transport)     NI_ARGS[NICODE_TRANSPORT]="$2"; shift ;;
     --domain)        NI_ARGS[NICODE_DOMAIN]="$2"; shift ;;
-    --token)         NI_ARGS[NICODE_TOKEN]="$2"; shift ;;
+    --device-key)    NI_ARGS[NICODE_DEVICE_PUBKEY]="$2"; shift ;;
+    --token)         echo "--token was removed: phones pair with a one-time code (nicode pair) or --device-key" >&2; exit 2 ;;
     --setup-id)      NI_ARGS[NICODE_SETUP_ID]="$2"; shift ;;
     --user)          NI_ARGS[NICODE_USER]="$2"; shift ;;
     --no-root)       NI_ARGS[NICODE_NO_ROOT]=1 ;;

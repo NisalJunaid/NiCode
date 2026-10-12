@@ -1,10 +1,10 @@
 import os from 'node:os';
 import { z } from 'zod';
-import { PROTOCOL_VERSION } from '../../../protocol/types.js';
+import { type DeviceInfo, PROTOCOL_VERSION } from '../../../protocol/types.js';
 import { app } from '../app.js';
-import { newToken, sha256Hex } from '../auth.js';
-import { updateTokens } from '../config.js';
-import { applyTokenChange } from '../http.js';
+import { isExpired, isKeyDevice, isTokenDevice } from '../auth.js';
+import { type Device, updateDevices } from '../config.js';
+import { applyDeviceChange } from '../http.js';
 import { NoParams, register, RpcError } from '../rpc.js';
 import { run } from '../util/exec.js';
 
@@ -22,10 +22,21 @@ export async function githubLoggedIn(force = false): Promise<boolean> {
   return ok;
 }
 
-/** Applies a token-list change to the running daemon immediately (the file watcher would too). */
-async function saveTokens(mutate: Parameters<typeof updateTokens>[0]): Promise<void> {
-  app.config.tokens = await updateTokens(mutate);
-  applyTokenChange();
+/** Applies a device-list change to the running daemon immediately (the file watcher would too). */
+async function saveDevices(mutate: (devices: Device[]) => Device[]): Promise<void> {
+  const next = await updateDevices(({ devices, pairingCodes }) => ({ devices: mutate(devices), pairingCodes }));
+  app.config.devices = next.devices;
+  applyDeviceChange();
+}
+
+export function deviceInfo(d: Device): DeviceInfo {
+  return {
+    id: d.id,
+    name: d.name,
+    createdAt: d.createdAt,
+    kind: isKeyDevice(d) ? 'key' : 'token',
+    ...(d.expiresAt ? { expiresAt: d.expiresAt } : {}),
+  };
 }
 
 export function registerServerModule(): void {
@@ -44,29 +55,25 @@ export function registerServerModule(): void {
       setup: { claude, github: await githubLoggedIn() },
       bypassAvailable: app.permissionModes().includes('bypassPermissions'),
       permissionModes: app.permissionModes(),
-      device: { id: ctx.device.id, name: ctx.device.name, createdAt: ctx.device.createdAt },
+      device: deviceInfo(ctx.device),
     };
   });
 
-  register('auth.rotate', NoParams, async (_p, ctx) => {
-    const token = newToken();
-    await saveTokens((tokens) => tokens.map((t) => (t.id === ctx.device.id ? { ...t, sha256: sha256Hex(token) } : t)));
-    return { token };
-  });
-
   register('auth.devices', NoParams, (_p, ctx) =>
-    app.config.tokens.map((t) => ({ id: t.id, name: t.name, createdAt: t.createdAt, current: t.id === ctx.device.id })),
+    app.config.devices
+      .filter((d) => isKeyDevice(d) || (isTokenDevice(d) && !isExpired(d)))
+      .map((d) => ({ ...deviceInfo(d), current: d.id === ctx.device.id })),
   );
 
   register('auth.revoke', z.object({ id: z.string() }), async ({ id }) => {
-    if (!app.config.tokens.some((t) => t.id === id)) throw new RpcError('not_found', 'No such device');
-    await saveTokens((tokens) => tokens.filter((t) => t.id !== id));
+    if (!app.config.devices.some((d) => d.id === id)) throw new RpcError('not_found', 'No such device');
+    await saveDevices((devices) => devices.filter((d) => d.id !== id));
     return { ok: true as const };
   });
 
   register('auth.renameDevice', z.object({ id: z.string(), name: z.string().min(1).max(64) }), async ({ id, name }) => {
-    if (!app.config.tokens.some((t) => t.id === id)) throw new RpcError('not_found', 'No such device');
-    await saveTokens((tokens) => tokens.map((t) => (t.id === id ? { ...t, name } : t)));
+    if (!app.config.devices.some((d) => d.id === id)) throw new RpcError('not_found', 'No such device');
+    await saveDevices((devices) => devices.map((d) => (d.id === id ? { ...d, name } : d)));
     return { ok: true as const };
   });
 }

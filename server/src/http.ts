@@ -1,20 +1,37 @@
 import { randomUUID } from 'node:crypto';
-import http, { type IncomingMessage } from 'node:http';
+import http, { type IncomingMessage, type ServerResponse } from 'node:http';
+import os from 'node:os';
 import type { Duplex } from 'node:stream';
 import { WebSocket, WebSocketServer } from 'ws';
+import { z } from 'zod';
+import type { PairResponse } from '../../protocol/types.js';
 import { app } from './app.js';
-import { Backoff, findDevice } from './auth.js';
-import type { DeviceToken } from './config.js';
+import {
+  authMessage,
+  Backoff,
+  ChallengeStore,
+  findPairingCode,
+  findTokenDevice,
+  isExpired,
+  isKeyDevice,
+  keyDeviceId,
+  normalizeCode,
+  publicKeyFrom,
+  sha256Hex,
+  verifyDeviceSignature,
+} from './auth.js';
+import { type Device, updateDevices } from './config.js';
 import { events } from './events.js';
 import { log } from './log.js';
 import { dispatch } from './rpc.js';
 
 const WS_SUBPROTOCOL_PREFIX = 'nicode.';
 const backoff = new Backoff();
+const challenges = new ChallengeStore();
 
 interface Client {
   ws: WebSocket;
-  device: DeviceToken;
+  device: Device;
   alive: boolean;
 }
 const clients = new Map<string, Client>();
@@ -30,17 +47,90 @@ function clientIp(req: IncomingMessage): string {
   return peer;
 }
 
-function presentedToken(req: IncomingMessage): string | undefined {
-  const auth = req.headers.authorization;
-  if (auth?.startsWith('Bearer ')) return auth.slice(7).trim();
-  // Browser fallback (test client): Sec-WebSocket-Protocol: nicode.<token>
-  const protos = req.headers['sec-websocket-protocol']?.split(',').map((s) => s.trim()) ?? [];
-  return protos.find((p) => p.startsWith(WS_SUBPROTOCOL_PREFIX))?.slice(WS_SUBPROTOCOL_PREFIX.length);
+/**
+ * Who is connecting:
+ *  - phones:  Authorization: Signature deviceId="…", nonce="…", sig="<base64>"
+ *             (nonce from GET /auth/challenge, signature over authMessage(nonce, deviceId))
+ *  - browser test console: short-lived token as Bearer, or subprotocol 'nicode.<token>'
+ */
+function authenticate(req: IncomingMessage): Device | null {
+  const auth = req.headers.authorization ?? '';
+  if (auth.startsWith('Signature ')) {
+    const f = Object.fromEntries([...auth.slice(10).matchAll(/(\w+)="([^"]*)"/g)].map((m) => [m[1]!, m[2]!]));
+    const { deviceId, nonce, sig } = f;
+    if (!deviceId || !nonce || !sig) return null;
+    const device = app.config.devices.find((d) => d.id === deviceId && isKeyDevice(d));
+    // Consume the nonce whatever happens next, so a captured signature can never be replayed.
+    const fresh = challenges.consume(nonce);
+    if (!device || !fresh) return null;
+    return verifyDeviceSignature(device, authMessage(nonce, deviceId), sig) ? device : null;
+  }
+  let token: string | undefined;
+  if (auth.startsWith('Bearer ')) token = auth.slice(7).trim();
+  else {
+    const protos = req.headers['sec-websocket-protocol']?.split(',').map((s) => s.trim()) ?? [];
+    token = protos.find((p) => p.startsWith(WS_SUBPROTOCOL_PREFIX))?.slice(WS_SUBPROTOCOL_PREFIX.length);
+  }
+  return findTokenDevice(app.config.devices, token);
 }
 
 function reject(socket: Duplex, status: number, text: string): void {
   socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
   socket.destroy();
+}
+
+function sendJson(res: ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+  res.end(JSON.stringify(body));
+}
+
+async function readJson(req: IncomingMessage, limit = 16 * 1024): Promise<unknown> {
+  let body = '';
+  for await (const chunk of req) {
+    body += chunk;
+    if (body.length > limit) throw new Error('body too large');
+  }
+  return JSON.parse(body);
+}
+
+const PairBody = z.object({
+  code: z.string().min(4).max(64),
+  deviceName: z.string().min(1).max(64),
+  alg: z.enum(['RS256', 'ES256', 'Ed25519']),
+  publicKey: z.string().min(16).max(8192),
+});
+
+/** POST /pair — one-time code + the phone's public key → a new key device. */
+async function handlePair(req: IncomingMessage, res: ServerResponse, ip: string): Promise<void> {
+  if (backoff.blockedFor(ip) > 0) return sendJson(res, 429, { error: 'Too many attempts; wait a minute' });
+  let body: z.infer<typeof PairBody>;
+  try {
+    body = PairBody.parse(await readJson(req));
+    publicKeyFrom(body.alg, body.publicKey); // reject unusable keys up front
+  } catch (err) {
+    return sendJson(res, 400, { error: err instanceof Error ? err.message.split('\n')[0] : 'bad request' });
+  }
+  const code = findPairingCode(app.config.pairingCodes, body.code);
+  if (!code) {
+    backoff.fail(ip);
+    log.warn({ ip }, 'pairing rejected: bad or expired code');
+    return sendJson(res, 401, { error: 'Pairing code is wrong or has expired. Run `nicode pair` again.' });
+  }
+  backoff.succeed(ip);
+  const codeHash = sha256Hex(normalizeCode(body.code));
+  let device!: Device;
+  const next = await updateDevices(({ devices, pairingCodes }) => {
+    const remaining = pairingCodes.filter((c) => c.sha256 !== codeHash && Date.parse(c.expiresAt) > Date.now());
+    // Re-pairing the same hardware key keeps its device record.
+    const existing = devices.find((d) => d.publicKey === body.publicKey);
+    device = existing ?? { id: keyDeviceId(body.publicKey), name: body.deviceName, createdAt: new Date().toISOString(), alg: body.alg, publicKey: body.publicKey };
+    return { devices: existing ? devices : [...devices, device], pairingCodes: remaining };
+  });
+  app.config.devices = next.devices;
+  app.config.pairingCodes = next.pairingCodes;
+  log.info({ device: device.name, ip }, 'device paired');
+  const out: PairResponse = { deviceId: device.id, deviceName: device.name, hostname: os.hostname(), publicHost: app.config.publicHost || null };
+  sendJson(res, 200, out);
 }
 
 export function startHttpServer(): http.Server {
@@ -53,24 +143,33 @@ export function startHttpServer(): http.Server {
   });
 
   const server = http.createServer((req, res) => {
-    if (req.method === 'GET' && req.url?.split('?')[0] === '/health') {
-      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-      res.end(JSON.stringify({ ok: true, version: app.daemonVersion, state: app.status.read().state }));
+    const route = `${req.method} ${req.url?.split('?')[0]}`;
+    const ip = clientIp(req);
+    if (route === 'GET /health') {
+      return sendJson(res, 200, { ok: true, version: app.daemonVersion, state: app.status.read().state });
+    }
+    if (route === 'GET /auth/challenge') {
+      if (backoff.blockedFor(ip) > 0) return sendJson(res, 429, { error: 'Too many failed logins; wait a minute' });
+      return sendJson(res, 200, challenges.issue());
+    }
+    if (route === 'POST /pair') {
+      handlePair(req, res, ip).catch((err) => {
+        log.error({ err }, 'pairing failed');
+        sendJson(res, 500, { error: 'pairing failed' });
+      });
       return;
     }
-    res.writeHead(404, { 'content-type': 'text/plain' });
-    res.end('not found');
+    sendJson(res, 404, { error: 'not found' });
   });
 
   server.on('upgrade', (req, socket, head) => {
     const ip = clientIp(req);
     if (req.url?.split('?')[0] !== '/ws') return reject(socket, 404, 'Not Found');
-    const wait = backoff.blockedFor(ip);
-    if (wait > 0) return reject(socket, 429, 'Too Many Requests');
-    const device = findDevice(app.config.tokens, presentedToken(req));
+    if (backoff.blockedFor(ip) > 0) return reject(socket, 429, 'Too Many Requests');
+    const device = authenticate(req);
     if (!device) {
       backoff.fail(ip);
-      log.warn({ ip }, 'rejected websocket: bad token');
+      log.warn({ ip }, 'rejected websocket: bad signature or token');
       return reject(socket, 401, 'Unauthorized');
     }
     backoff.succeed(ip);
@@ -78,6 +177,7 @@ export function startHttpServer(): http.Server {
   });
 
   const heartbeat = setInterval(() => {
+    applyDeviceChange(); // also ends sessions of browser tokens that just expired
     for (const [id, c] of clients) {
       if (!c.alive) {
         c.ws.terminate();
@@ -97,7 +197,7 @@ export function startHttpServer(): http.Server {
   return server;
 }
 
-function onConnection(ws: WebSocket, device: DeviceToken, ip: string): void {
+function onConnection(ws: WebSocket, device: Device, ip: string): void {
   const clientId = randomUUID();
   const client: Client = { ws, device, alive: true };
   clients.set(clientId, client);
@@ -116,7 +216,7 @@ function onConnection(ws: WebSocket, device: DeviceToken, ip: string): void {
     } catch {
       return;
     }
-    // Use the current device record (it may have been renamed/re-keyed since connecting).
+    // Use the current device record (it may have been renamed since connecting).
     const res = await dispatch(frame, { clientId, device: client.device });
     if (res && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(res));
   });
@@ -128,12 +228,12 @@ function onConnection(ws: WebSocket, device: DeviceToken, ip: string): void {
   ws.on('error', (err) => log.warn({ err }, 'websocket error'));
 }
 
-/** After the token list changes: refresh device records and drop sockets of removed devices. */
-export function applyTokenChange(): void {
+/** After the device list changes (or time passes): drop sockets of revoked or expired devices. */
+export function applyDeviceChange(): void {
   for (const [id, c] of clients) {
-    const current = app.config.tokens.find((t) => t.id === c.device.id);
-    if (!current) {
-      c.ws.close(4401, 'device revoked');
+    const current = app.config.devices.find((d) => d.id === c.device.id);
+    if (!current || isExpired(current)) {
+      c.ws.close(4401, current ? 'access expired' : 'device revoked');
       clients.delete(id);
       events.remove(id);
     } else {

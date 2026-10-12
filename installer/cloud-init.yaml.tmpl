@@ -1,15 +1,15 @@
 #cloud-config
 # niCode — user_data sent by the app when it creates a droplet (POST /v2/droplets).
 # The app substitutes the {{...}} placeholders; app/src/provision/cloudInit.ts embeds a copy.
-# Secrets: NICODE_TOKEN is one-time — the installer shreds this file when done and the app
-# rotates the token (auth.rotate) right after pairing, because user_data stays readable via
-# the droplet metadata service.
+# No secrets in here: the app sends its phone's PUBLIC key (NICODE_DEVICE_PUBKEY = ALG:BASE64).
+# The daemon only accepts logins signed by the matching private key, which never leaves the
+# phone's secure hardware. user_data stays readable via droplet metadata, and that's fine.
 
 write_files:
   - path: /root/nicode-answers.env
     permissions: "0600"
     content: |
-      NICODE_TOKEN={{TOKEN}}
+      NICODE_DEVICE_PUBKEY='{{DEVICE_PUBKEY}}'
       NICODE_SETUP_ID={{SETUP_ID}}
       NICODE_DEVICE_NAME='{{DEVICE_NAME}}'
       NICODE_REPO={{REPO}}

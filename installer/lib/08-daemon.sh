@@ -4,7 +4,7 @@
 NI_APP_DIR="${NI_APP_DIR:-/opt/nicode}"
 
 step_daemon() {
-  local src cfg_dir cfg token="" bind
+  local src cfg_dir cfg bind
 
   # 1. Source: a local checkout (dev, e.g. WSL → /mnt/c/...) or a clone of NICODE_REPO@NICODE_REF.
   if [[ -n "${NICODE_SOURCE_DIR:-}" ]]; then
@@ -28,23 +28,25 @@ step_daemon() {
   # Build with the Node chosen in the node step (may be a private one in /opt/nicode/node).
   as_user "export PATH='$(dirname "$NI_NODE_BIN")':\$PATH; cd '$src/server' && npm ci --no-audit --no-fund && npm run build"
 
-  # 3. Config. One hashed token per paired device (`nicode token add/list/revoke`).
-  #    Existing devices are kept; an app-supplied token is added; a first install with no
-  #    token gets an "installer" device whose token is shown as a QR at the end.
+  # 3. Config. Devices are phones (hardware public keys) or short-lived browser tokens.
+  #    Existing phones and unexpired tokens are kept; legacy permanent tokens are dropped.
+  #    A droplet created by the app passes the phone's PUBLIC key (NICODE_DEVICE_PUBKEY=ALG:BASE64),
+  #    so no secret ever goes through cloud-init. Otherwise pair with `nicode pair` (shown at the end).
   cfg_dir="$NI_USER_HOME/.config/nicode"
   cfg="$cfg_dir/config.json"
-  local tokens='[]' hash
-  [[ -f "$cfg" ]] && tokens="$(jq -c '.tokens // []' "$cfg")"
-  if [[ -n "${NICODE_TOKEN:-}" ]]; then
-    token="$NICODE_TOKEN"
-  elif [[ "$tokens" == '[]' ]]; then
-    token="$(openssl rand -hex 32)"
-    printf '%s' "$token" >"$NI_TMP/pair_token"; chmod 600 "$NI_TMP/pair_token"
+  local devices='[]' codes='[]'
+  if [[ -f "$cfg" ]]; then
+    devices="$(jq -c '(.devices // .tokens // []) | map(select(.publicKey != null or .expiresAt != null))' "$cfg")"
+    codes="$(jq -c '.pairingCodes // []' "$cfg")"
   fi
-  if [[ -n "$token" ]]; then
-    hash="$(printf '%s' "$token" | sha256sum | cut -d' ' -f1)"
-    tokens="$(jq -c --arg h "$hash" --arg n "${NICODE_DEVICE_NAME:-${NICODE_TOKEN:+app}}" --arg id "d_$(openssl rand -hex 4)" \
-      'if any(.[]; .sha256 == $h) then . else . + [{id: $id, name: (if $n == "" then "installer" else $n end), sha256: $h, createdAt: (now | todate)}] end' <<<"$tokens")"
+  if [[ -n "${NICODE_DEVICE_PUBKEY:-}" ]]; then
+    local alg="${NICODE_DEVICE_PUBKEY%%:*}" pub="${NICODE_DEVICE_PUBKEY#*:}"
+    case "$alg" in RS256|ES256|Ed25519) ;; *) step_detail "NICODE_DEVICE_PUBKEY must be ALG:BASE64 (RS256|ES256|Ed25519)"; return 1 ;; esac
+    devices="$(jq -c --arg a "$alg" --arg k "$pub" --arg n "${NICODE_DEVICE_NAME:-phone}" --arg id "d_$(printf '%s' "$pub" | sha256sum | cut -c1-8)" \
+      'if any(.[]; .publicKey == $k) then . else . + [{id: $id, name: $n, alg: $a, publicKey: $k, createdAt: (now | todate)}] end' <<<"$devices")"
+  fi
+  if [[ -n "${NICODE_TOKEN:-}" ]]; then
+    log_warn "NICODE_TOKEN/--token is no longer supported (permanent tokens were removed). Pair with: nicode pair"
   fi
 
   case "$NICODE_TRANSPORT" in
@@ -52,7 +54,7 @@ step_daemon() {
     tailscale) bind="$NI_PUBLIC_HOST" ;;
     local)     bind=0.0.0.0 ;;
   esac
-  tmpl_daemon_config "$bind" "$tokens" "$src" >"$cfg.tmp"
+  tmpl_daemon_config "$bind" "$devices" "$src" "$codes" >"$cfg.tmp"
   chown "$NI_USER:" "$cfg.tmp"; chmod 600 "$cfg.tmp"; mv -f "$cfg.tmp" "$cfg"
 
   # 4. Service.

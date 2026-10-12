@@ -43,7 +43,7 @@ describe('daemon over WebSocket', () => {
   it('reports server info and gates claude.* until Claude is logged in', async () => {
     const c = await Client.connect(TOKEN);
     const info = await c.call('server.info');
-    expect(info.result).toMatchObject({ protocolVersion: 1, setup: { claude: false }, device: { id: 'd_test', name: 'test phone' } });
+    expect(info.result).toMatchObject({ protocolVersion: 2, setup: { claude: false }, device: { id: 'd_test', name: 'test phone' } });
     expect(info.result.permissionModes).toContain('default');
     const gated = await c.call('claude.list');
     expect(gated.error.code).toBe('setup_required');
@@ -99,15 +99,15 @@ describe('daemon over WebSocket', () => {
     c.close();
   });
 
-  it('re-keys only the calling device and picks up `nicode token add` without restart', async () => {
+  it('picks up a new browser token from the config file without a restart', async () => {
     const c = await Client.connect(TOKEN);
     const devices = (await c.call('auth.devices')).result;
-    expect(devices).toEqual([expect.objectContaining({ id: 'd_test', current: true })]);
+    expect(devices).toEqual([expect.objectContaining({ id: 'd_test', kind: 'token', current: true })]);
 
-    // Simulate `nicode token add tablet` editing the config file.
+    // Simulate `nicode token add tablet --expires 1h` editing the config file.
     const cfg = JSON.parse(await readFile(cfgPath, 'utf8'));
     const tablet = 'c'.repeat(64);
-    cfg.tokens.push({ id: 'd_tab', name: 'tablet', sha256: sha(tablet), createdAt: new Date().toISOString() });
+    cfg.devices.push({ id: 'd_tab', name: 'tablet', sha256: sha(tablet), createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3600_000).toISOString() });
     await writeFile(cfgPath, JSON.stringify(cfg));
     let t: C | null = null;
     for (let i = 0; i < 30 && !t; i++) {
@@ -115,15 +115,7 @@ describe('daemon over WebSocket', () => {
       if (!t) await new Promise((r) => setTimeout(r, 100));
     }
     expect(t).not.toBeNull();
-
-    const rotated = (await c.call('auth.rotate')).result.token as string;
-    expect(rotated).toMatch(/^[0-9a-f]{64}$/);
-    await expect(Client.connect(TOKEN)).rejects.toThrow('401');
-    const again = await Client.connect(rotated);
-    expect((await again.call('server.info')).result.device.id).toBe('d_test');
-    // The tablet was not affected.
-    expect((await t!.call('server.info')).result.device.name).toBe('tablet');
-    again.close();
+    expect((await t!.call('server.info')).result.device).toMatchObject({ name: 'tablet', kind: 'token' });
     t!.close();
     c.close();
   });

@@ -89,7 +89,7 @@ server {
 EOF
 }
 
-# tmpl_daemon_config <bindHost> <tokens json array> <source dir>
+# tmpl_daemon_config <bindHost> <devices json> <source dir> <pairing codes json>
 tmpl_daemon_config() {
   local h="$NI_USER_HOME"
   cat <<EOF
@@ -97,7 +97,8 @@ tmpl_daemon_config() {
   "version": 1,
   "bindHost": "$(json_escape "$1")",
   "port": ${NI_PORT},
-  "tokens": $2,
+  "devices": $2,
+  "pairingCodes": ${4:-[]},
   "transport": "$(json_escape "$NICODE_TRANSPORT")",
   "publicHost": "$(json_escape "${NI_PUBLIC_HOST:-}")",
   "user": "$(json_escape "$NI_USER")",

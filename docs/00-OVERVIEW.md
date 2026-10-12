@@ -36,7 +36,7 @@
 | Option | You provide | What happens | Logins shown |
 |---|---|---|---|
 | **Connect to my server** | SSH host, user, key or password | The app probes over SSH. If niCode is installed it adds a device token (`nicode token add`). Otherwise it runs the installer, which reuses the existing Claude user and repos folder, and works alongside an existing nginx | None if Claude is already logged in on the server |
-| **Pair with QR / code** | Output of `nicode pair` on the server | No SSH; the app just stores host and token | None if already logged in |
+| **Pair with QR / code** | Output of `nicode pair` on the server (one-time code, 10 min) | No SSH; the app registers its hardware public key | None if already logged in |
 | **Create on DigitalOcean** | DO API token | The app creates the droplet; cloud-init installs; live progress | Claude (and optionally GitHub) on a fresh droplet |
 
 Every phone or tablet gets its **own token**, so pairing a new device never disconnects the others.
@@ -53,20 +53,23 @@ App                         DigitalOcean                 Droplet
  │ WSS connect (token) ─────────────────────────────────►│ state: needs_claude_login
  │ setup.claudeLogin.start → URL → browser → code ──────►│ claude setup-token → token saved → verified
  │ setup.github.start → device code (optional) ─────────►│ gh auth login → git identity
- │ auth.rotate ─────────────────────────────────────────►│ new token (old one was in user_data)
  │ ready: projects → chat / files / changes / terminal
 ```
 
 ## Security model
-- **Who can connect:** whoever holds the 256-bit bearer token. It's stored hashed on the server and in the phone's SecureStore. It's rotated right after provisioning, and can be rotated any time with `nicode token rotate`.
-- **What a connection can do:** effectively anything the `dev` user can do, including sudo, because Claude Code with permissions is remote code execution by design. Treat the token like an SSH key.
+- **Who can connect:** only paired phones. There are no reusable passwords:
+  - Each phone keeps a private key in its secure hardware (Android Keystore / iOS Secure Enclave). It never leaves the phone, and it's unlocked by fingerprint or face (once per unlock, with a 5-minute grace period).
+  - **Pairing** uses a one-time code from `nicode pair` (single use, expires after 10 minutes), so a screenshot of the QR is useless afterwards.
+  - **Every connection** signs a fresh single-use challenge from the server, so captured traffic can't be replayed.
+  - The browser test console uses **short-lived** tokens only (`nicode token add --expires 1h`). Old permanent tokens are rejected and removed on update.
+- **What a connection can do:** effectively anything the server user can do (root, if niCode runs as root), because Claude Code with permissions is remote code execution by design. Revoke a lost phone with `nicode token revoke <name>`; its open connection drops immediately.
 - **Mitigations:**
   - TLS only, with the daemon on localhost behind Caddy
   - per-IP backoff, plus fail2ban for SSH
   - key-only SSH, and ufw allowing only 22, 80 and 443
   - automatic security updates
   - no shell interpolation of request parameters, and realpath guards on all file access
-  - tokens redacted from logs
+  - secrets redacted from logs
   - Claude tool use goes through the phone's approve/deny unless you choose Auto-edit or Bypass
 - **Subscription terms:** this is a personal tool on your own server using your own subscription. Don't share access or resell it. Usage limits (5-hour and weekly) apply to long agent runs.
 

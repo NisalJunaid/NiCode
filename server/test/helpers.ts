@@ -44,7 +44,8 @@ export async function startDaemon(opts: { claudeToken?: string; env?: Record<str
       version: 1,
       bindHost: '127.0.0.1',
       port,
-      tokens: [{ id: 'd_test', name: 'test phone', sha256: sha(TOKEN), createdAt: new Date().toISOString() }],
+      // A short-lived browser-style token device, so tests can connect without key signing.
+      devices: [{ id: 'd_test', name: 'test phone', sha256: sha(TOKEN), createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3600_000).toISOString() }],
       transport: 'local',
       publicHost: 'localhost',
       user: 'tester',
@@ -83,10 +84,18 @@ export class Client {
   private id = 0;
   private waiting = new Map<number, (m: any) => void>();
   events: any[] = [];
+  closed: { code: number; reason: string } | null = null;
 
-  static async connect(port: number, token: string): Promise<Client> {
+  static connect(port: number, token: string): Promise<Client> {
+    return Client.connectWith(port, `Bearer ${token}`);
+  }
+
+  static async connectWith(port: number, authorization: string): Promise<Client> {
     const c = new Client();
-    c.ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { Authorization: `Bearer ${token}` } });
+    c.ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { headers: { Authorization: authorization } });
+    c.ws.on('close', (code, reason) => {
+      c.closed = { code, reason: reason.toString() };
+    });
     c.ws.on('message', (d) => {
       const m = JSON.parse(d.toString());
       if ('id' in m) c.waiting.get(m.id)?.(m);

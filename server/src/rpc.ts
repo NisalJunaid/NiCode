@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { ErrorCode, MethodName, MethodResult, RequestFrame, ResponseFrame } from '../../protocol/types.js';
-import type { DeviceToken } from './config.js';
+import type { Device } from './config.js';
 import { log } from './log.js';
 
 export class RpcError extends Error {
@@ -16,7 +16,7 @@ export class RpcError extends Error {
 /** Per-connection context handed to every handler. */
 export interface RpcContext {
   clientId: string;
-  device: DeviceToken;
+  device: Device;
 }
 
 type AnyHandler = (params: any, ctx: RpcContext) => unknown;

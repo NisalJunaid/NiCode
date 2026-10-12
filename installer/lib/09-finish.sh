@@ -18,8 +18,8 @@ step_finish() {
     chmod 755 /etc/update-motd.d/99-nicode
   fi
 
-  # The answers file from cloud-init held the initial token; the app rotates it after setup anyway.
-  if [[ -n "${NI_CONFIG_FILE:-}" && -f "$NI_CONFIG_FILE" ]] && grep -q '^NICODE_TOKEN=' "$NI_CONFIG_FILE"; then
+  # Remove the cloud-init answers file once used (it holds only public values now, but keep /root tidy).
+  if [[ -n "${NI_CONFIG_FILE:-}" && -f "$NI_CONFIG_FILE" ]] && grep -q '^NICODE_' "$NI_CONFIG_FILE"; then
     shred -u "$NI_CONFIG_FILE" 2>/dev/null || rm -f "$NI_CONFIG_FILE"
   fi
 
@@ -35,9 +35,16 @@ finish_summary() {
   printf '  User:       %s   projects: %s\n' "$NI_USER" "$NI_PROJECTS_ROOT"
   printf '  Log:        %s\n' "$NI_LOG_FILE"
   printf '  Manage:     nicode status | doctor | login | logs | update\n'
-  if [[ -f "$NI_TMP/pair_token" ]]; then
+  local cfg="$NI_USER_HOME/.config/nicode/config.json" phones=0
+  if [[ "$NI_DAEMON_INSTALLED" == 1 && -f "$cfg" ]]; then
+    phones="$(jq '[(.devices // [])[] | select(.publicKey)] | length' "$cfg" 2>/dev/null || echo 0)"
     echo
-    /usr/local/bin/nicode _pair-print "$(cat "$NI_TMP/pair_token")" || true
+    if (( phones == 0 )); then
+      # No phone yet: show a one-time pairing code (single use, expires in 10 minutes).
+      /usr/local/bin/nicode pair "phone" || true
+    else
+      printf '  Paired phones: %s. Add another with: nicode pair\n' "$phones"
+    fi
   fi
   case "$state" in
     base_ready)         printf '\n  Next: once server/ is published, run  sudo nicode update  (installs the daemon).\n' ;;
