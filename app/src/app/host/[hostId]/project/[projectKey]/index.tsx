@@ -1,3 +1,4 @@
+import { Image } from 'expo-image';
 import { router, useGlobalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-native';
@@ -9,6 +10,7 @@ import { PermissionCard } from '@/components/chat/PermissionCard';
 import { ToolCard } from '@/components/chat/ToolCard';
 import { ConnectionBar } from '@/components/ConnectionBar';
 import { Banner, Button, Icon, T } from '@/components/ui';
+import { type Attachment, rememberSent, sentThumbnails } from '@/lib/attachments';
 import { type ChatItem, buildChatItems } from '@/lib/chatItems';
 import { useProject } from '@/lib/project';
 import { useConnection, useOnConnected } from '@/lib/connections';
@@ -64,16 +66,20 @@ export default function ChatScreen() {
   const reversed = useMemo(() => [...items].reverse(), [items]);
   const turnStart = useMemo(() => [...data.events].reverse().find((e) => e.event.type === 'nicode' && e.event.subtype === 'user_turn')?.ts, [data.events]);
 
-  const send = async (text: string): Promise<boolean> => {
+  const send = async (text: string, attachments: Attachment[] = []): Promise<boolean> => {
     if (!client) return false;
     setSendError(null);
+    const images = attachments.length ? { images: attachments.map((a) => a.image) } : {};
+    const uris = attachments.map((a) => a.uri);
     try {
       if (!sessionId) {
-        const s = await client.call('claude.start', { projectPath, prompt: text, permissionMode: mode, ...(model ? { model } : {}) });
+        const s = await client.call('claude.start', { projectPath, prompt: text, permissionMode: mode, ...(model ? { model } : {}), ...images }, 120_000);
+        rememberSent(s.sessionId, 0, uris);
         setSessionId(s.sessionId);
         void loadSummaries();
       } else {
-        await client.call('claude.send', { sessionId, text });
+        rememberSent(sessionId, items.filter((i) => i.kind === 'user').length, uris);
+        await client.call('claude.send', { sessionId, text, ...images }, 120_000);
       }
       return true;
     } catch (err) {
@@ -117,7 +123,7 @@ export default function ChatScreen() {
             inverted
             data={reversed}
             keyExtractor={(i) => i.key}
-            renderItem={({ item, index }) => <ChatRow item={item} pending={running && index < 6} />}
+            renderItem={({ item, index }) => <ChatRow item={item} sessionId={sessionId} pending={running && index < 6} />}
             contentContainerStyle={{ padding: space.md, gap: space.sm }}
             ListHeaderComponent={running ? <Working started={turnStart} /> : null}
             keyboardShouldPersistTaps="handled"
@@ -156,15 +162,31 @@ export default function ChatScreen() {
   );
 }
 
-function ChatRow({ item, pending }: { item: ChatItem; pending: boolean }) {
+function ChatRow({ item, sessionId, pending }: { item: ChatItem; sessionId: string | null | undefined; pending: boolean }) {
   const c = useColors();
   switch (item.kind) {
-    case 'user':
+    case 'user': {
+      const thumbs = item.imageCount ? sentThumbnails(sessionId, item.turn) : [];
       return (
         <View style={[styles.user, { backgroundColor: c.userBubble }]}>
+          {thumbs.length ? (
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
+              {thumbs.map((u) => (
+                <Image key={u} source={{ uri: u }} style={{ width: 96, height: 96, borderRadius: 10 }} contentFit="cover" accessibilityLabel="Attached image" />
+              ))}
+            </View>
+          ) : item.imageCount ? (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 4 }}>
+              <Icon name="image-outline" size={14} color={c.textDim} />
+              <T size="xs" tone="dim">
+                {item.imageCount} image{item.imageCount > 1 ? 's' : ''}
+              </T>
+            </View>
+          ) : null}
           <T selectable>{item.text}</T>
         </View>
       );
+    }
     case 'text':
       return (
         <View style={{ paddingHorizontal: space.xs }}>

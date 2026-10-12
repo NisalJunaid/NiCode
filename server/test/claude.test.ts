@@ -44,6 +44,20 @@ describe('claude sessions', () => {
     await c.waitEvent(statusOf(sessionId, 'idle'));
   });
 
+  it('passes attached images to Claude as image blocks, keeping only a count in history', async () => {
+    const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex').toString('base64');
+    const st = await c.call('claude.start', { projectPath: d.demo, prompt: 'what is in this picture', images: [{ mediaType: 'image/png', data: png }, { mediaType: 'image/png', data: png }] });
+    const id = st.result.sessionId;
+    await c.waitEvent(ofSession(id, (ev) => ev.type === 'assistant' && ev.message.content[0].text === 'echo: what is in this picture [images: 2]'));
+    await c.waitEvent(statusOf(id, 'idle'));
+    const h = (await c.call('claude.history', { sessionId: id })).result;
+    const turn = h.events.find((e: any) => e.event.subtype === 'user_turn').event;
+    expect(turn).toMatchObject({ text: 'what is in this picture', imageCount: 2 });
+    expect(JSON.stringify(h)).not.toContain(png);
+    const bad = await c.call('claude.send', { sessionId: id, text: 'x', images: [{ mediaType: 'image/png', data: 'not base64!!' }] });
+    expect(bad.error).toBeTruthy();
+  });
+
   it('keeps the same process for the next turn', async () => {
     c.events = [];
     expect((await c.call('claude.send', { sessionId, text: 'second' })).result.ok).toBe(true);

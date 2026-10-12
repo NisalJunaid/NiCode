@@ -205,6 +205,13 @@ export interface TermInfo {
 // Methods: name → [params, result]
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** An image attached to a chat message (max 4 per message, ≤ 5 MB each). Only `imageCount` is kept in history. */
+export interface ImageInput {
+  mediaType: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
+  /** base64, no data: prefix */
+  data: string;
+}
+
 export interface Methods {
   'server.info': [Record<string, never>, ServerInfo];
 
@@ -255,8 +262,8 @@ export interface Methods {
   'term.list': [Record<string, never>, TermInfo[]];
 
   // Claude Code sessions
-  'claude.start': [{ projectPath: string; prompt: string; model?: string; permissionMode?: PermissionMode }, ClaudeSessionSummary];
-  'claude.send': [{ sessionId: string; text: string }, { ok: true }];
+  'claude.start': [{ projectPath: string; prompt: string; model?: string; permissionMode?: PermissionMode; images?: ImageInput[] }, ClaudeSessionSummary];
+  'claude.send': [{ sessionId: string; text: string; images?: ImageInput[] }, { ok: true }];
   'claude.interrupt': [{ sessionId: string }, { ok: true }];
   'claude.setMode': [{ sessionId: string; permissionMode?: PermissionMode; model?: string }, ClaudeSessionSummary];
   'claude.list': [{ projectPath?: string }, ClaudeSessionSummary[]];

@@ -1,7 +1,10 @@
+import { Image } from 'expo-image';
 import { useState } from 'react';
-import { Keyboard, Modal, Pressable, StyleSheet, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Keyboard, Modal, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { PermissionMode } from '@protocol';
+import { type Attachment, MAX_IMAGES, pickImages } from '@/lib/attachments';
+import { errorMessage } from '@/lib/util';
 import { font, radius, space, useColors } from '@/theme';
 import { Icon, IconButton, Segmented, T } from '../ui';
 
@@ -27,7 +30,7 @@ interface Props {
   model: string;
   modes: PermissionMode[];
   placeholder?: string;
-  onSend: (text: string) => Promise<boolean> | boolean;
+  onSend: (text: string, attachments: Attachment[]) => Promise<boolean> | boolean;
   onStop: () => void;
   onChangeMode: (m: PermissionMode) => void;
   onChangeModel: (m: string) => void;
@@ -39,16 +42,44 @@ export function Composer({ running, disabled, mode, model, modes, placeholder, o
   const insets = useSafeAreaInsets();
   const [text, setText] = useState('');
   const [sheet, setSheet] = useState(false);
-  const canSend = !!text.trim() && !disabled && !running;
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [picking, setPicking] = useState(false);
+  const canSend = (!!text.trim() || attachments.length > 0) && !disabled && !running && !picking;
   const info = MODE_INFO[mode];
 
   const send = async () => {
     if (!canSend) return;
     const t = text;
+    const a = attachments;
     setText('');
+    setAttachments([]);
     Keyboard.dismiss(); // give the conversation the screen while Claude works
-    const ok = await onSend(t.trim());
-    if (!ok) setText(t); // keep the draft if sending failed
+    const ok = await onSend(t.trim() || (a.length > 1 ? 'Take a look at these images.' : 'Take a look at this image.'), a);
+    if (!ok) {
+      // keep the draft if sending failed
+      setText(t);
+      setAttachments(a);
+    }
+  };
+
+  const pick = async (source: 'camera' | 'library') => {
+    setPicking(true);
+    try {
+      const more = await pickImages(source, MAX_IMAGES - attachments.length);
+      setAttachments((cur) => [...cur, ...more].slice(0, MAX_IMAGES));
+    } catch (err) {
+      Alert.alert("Couldn't add the image", errorMessage(err));
+    } finally {
+      setPicking(false);
+    }
+  };
+  const attach = () => {
+    if (attachments.length >= MAX_IMAGES) return Alert.alert(`Up to ${MAX_IMAGES} images per message`);
+    Alert.alert('Add an image', 'Screenshots, photos of a screen or a sketch. Claude can see them.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Take photo', onPress: () => void pick('camera') },
+      { text: 'Choose', onPress: () => void pick('library') },
+    ]);
   };
 
   return (
@@ -61,7 +92,31 @@ export function Composer({ running, disabled, mode, model, modes, placeholder, o
         </T>
         <Icon name="chevron-down" size={12} color={c.textDim} />
       </Pressable>
+      {attachments.length || picking ? (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: space.sm }} keyboardShouldPersistTaps="handled">
+          {attachments.map((a, i) => (
+            <View key={a.uri}>
+              <Image source={{ uri: a.uri }} style={[styles.thumb, { borderColor: c.border }]} contentFit="cover" accessibilityLabel={`Attached image ${i + 1}`} />
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Remove image ${i + 1}`}
+                hitSlop={8}
+                onPress={() => setAttachments((cur) => cur.filter((x) => x.uri !== a.uri))}
+                style={[styles.thumbX, { backgroundColor: c.overlay }]}
+              >
+                <Icon name="close" size={14} color="#fff" />
+              </Pressable>
+            </View>
+          ))}
+          {picking ? (
+            <View style={[styles.thumb, { borderColor: c.border, alignItems: 'center', justifyContent: 'center' }]}>
+              <ActivityIndicator color={c.accent} />
+            </View>
+          ) : null}
+        </ScrollView>
+      ) : null}
       <View style={[styles.inputRow, { backgroundColor: c.surface, borderColor: c.border }]}>
+        <IconButton icon="image-outline" label="Attach an image" onPress={attach} disabled={disabled || running || picking} size={20} />
         <TextInput
           value={text}
           onChangeText={setText}
@@ -124,7 +179,9 @@ export function Composer({ running, disabled, mode, model, modes, placeholder, o
 const styles = StyleSheet.create({
   wrap: { borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: space.md, paddingTop: space.sm, gap: space.sm },
   modeChip: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', paddingHorizontal: space.md, height: 30, borderRadius: radius.pill },
-  inputRow: { flexDirection: 'row', alignItems: 'flex-end', borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.xl, paddingLeft: space.md, paddingRight: 4, paddingVertical: 4 },
+  inputRow: { flexDirection: 'row', alignItems: 'flex-end', borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.xl, paddingLeft: 2, paddingRight: 4, paddingVertical: 4 },
+  thumb: { width: 64, height: 64, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth },
+  thumbX: { position: 'absolute', top: 4, right: 4, width: 22, height: 22, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
   input: { flex: 1, fontSize: font.size.md, maxHeight: 160, minHeight: 36, paddingTop: 8, paddingBottom: 8 },
   backdrop: { flex: 1, justifyContent: 'flex-end' },
   sheet: { borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl, padding: space.lg, gap: space.sm },

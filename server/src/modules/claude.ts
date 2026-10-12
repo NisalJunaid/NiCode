@@ -11,6 +11,11 @@ import { projectOf, touchProject } from './projects.js';
 import { sendPush } from './push.js';
 
 const Mode = z.enum(['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions']);
+/** Up to 4 images per message, ≤ 5 MB each (base64 is 4/3 larger). */
+const Images = z
+  .array(z.object({ mediaType: z.enum(['image/jpeg', 'image/png', 'image/webp', 'image/gif']), data: z.string().min(16).max(7_000_000).regex(/^[A-Za-z0-9+/]+={0,2}$/) }))
+  .max(4)
+  .optional();
 
 const sessions = new Map<string, ClaudeSession>();
 let store: SessionStore;
@@ -76,8 +81,8 @@ export function shutdownClaude(): void {
 export function registerClaudeModule(): void {
   register(
     'claude.start',
-    z.object({ projectPath: z.string(), prompt: z.string().min(1).max(200_000), model: z.string().max(100).optional(), permissionMode: Mode.optional() }),
-    async ({ projectPath, prompt, model, permissionMode }) => {
+    z.object({ projectPath: z.string(), prompt: z.string().min(1).max(200_000), model: z.string().max(100).optional(), permissionMode: Mode.optional(), images: Images }),
+    async ({ projectPath, prompt, model, permissionMode, images }) => {
       const project = await projectOf(projectPath);
       ensureCapacity();
       const mode = permissionMode ?? 'default';
@@ -98,17 +103,17 @@ export function registerClaudeModule(): void {
       store.upsert(s);
       const session = new ClaudeSession(s, { store, broker, onResult });
       sessions.set(s.sessionId, session);
-      await session.send(prompt);
+      await session.send(prompt, images);
       void touchProject(project);
       return publicSummary(s);
     },
   );
 
-  register('claude.send', z.object({ sessionId: z.string(), text: z.string().min(1).max(200_000) }), async ({ sessionId, text }) => {
+  register('claude.send', z.object({ sessionId: z.string(), text: z.string().min(1).max(200_000), images: Images }), async ({ sessionId, text, images }) => {
     const s = get(sessionId);
     if (s.busy) throw new RpcError('busy', 'Claude is still working on the previous message');
     ensureCapacity();
-    await s.send(text);
+    await s.send(text, images);
     return { ok: true as const };
   });
 

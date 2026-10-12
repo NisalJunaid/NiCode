@@ -2,7 +2,7 @@ import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ClaudeSessionState, ClaudeSessionSummary, ClaudeStreamEvent } from '../../../protocol/types.js';
+import type { ClaudeSessionState, ClaudeSessionSummary, ClaudeStreamEvent, ImageInput } from '../../../protocol/types.js';
 import { app } from '../app.js';
 import { writeFileAtomic } from '../config.js';
 import { events } from '../events.js';
@@ -170,12 +170,12 @@ export class ClaudeSession {
     setTimeout(() => p.exitCode === null && p.kill('SIGTERM'), 5000).unref();
   }
 
-  async send(text: string): Promise<void> {
+  async send(text: string, images: ImageInput[] = []): Promise<void> {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.busy = true;
     this.stderrTail = '';
     this.setState('running');
-    this.record({ type: 'nicode', subtype: 'user_turn', text });
+    this.record({ type: 'nicode', subtype: 'user_turn', text, ...(images.length ? { imageCount: images.length } : {}) });
     try {
       if (!this.proc || this.proc.exitCode !== null) this.proc = await this.spawnProcess();
     } catch (err) {
@@ -185,7 +185,10 @@ export class ClaudeSession {
     }
     const msg = {
       type: 'user',
-      message: { role: 'user', content: [{ type: 'text', text }] },
+      message: {
+        role: 'user',
+        content: [...images.map((i) => ({ type: 'image', source: { type: 'base64', media_type: i.mediaType, data: i.data } })), { type: 'text', text }],
+      },
       parent_tool_use_id: null,
       session_id: this.s.claudeSessionId ?? this.id,
     };

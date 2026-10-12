@@ -90,6 +90,7 @@ While `SetupStatus.state` is `needs_claude_login`, only these methods are allowe
 - **`term.close`**: `kill: true` kills the tmux session; otherwise it only detaches.
 - **`claude.start`**: creates a session, spawns the CLI, sends `prompt` as the first turn, and resolves immediately with the summary (`state: "running"`). The output streams as `claude.event`.
 - **`claude.send`**: `busy` while a turn is running; the app should queue the message or offer Stop. If the CLI process exited (idle timeout or crash), the daemon respawns it with `--resume`.
+- **Images**: `claude.start` and `claude.send` accept `images: ImageInput[]` (up to 4; jpeg/png/webp/gif; ≤ 5 MB each as base64 without a `data:` prefix). They reach Claude as image blocks before the text. History keeps only `imageCount` on the `user_turn` marker, never the image data. The app resizes images to ≤ 1568 px JPEG before sending.
 - **`claude.interrupt`**: sends SIGINT. The session goes to `idle` once the process settles.
 - **`claude.setMode`**: takes effect on the next turn (the daemon respawns with `--resume` and the new flags if needed).
 - **`claude.history`**: returns events with `seq > sinceSeq` (all if omitted), up to 2000 per call. The client pages by calling again with the returned `lastSeq`.

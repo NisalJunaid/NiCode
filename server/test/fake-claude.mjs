@@ -37,7 +37,8 @@ let turns = 0;
 const rl = readline.createInterface({ input: process.stdin });
 rl.on('line', async (line) => {
   const msg = JSON.parse(line);
-  const text = msg.message.content[0].text;
+  const text = msg.message.content.find((b) => b.type === 'text').text;
+  const images = msg.message.content.filter((b) => b.type === 'image' && b.source?.type === 'base64' && b.source.data).length;
   turns++;
   if (text.includes('slow')) await new Promise((r) => setTimeout(r, 30_000));
   if (text.includes('needs-permission')) {
@@ -46,7 +47,7 @@ rl.on('line', async (line) => {
     out({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: d.behavior === 'allow' ? 'written' : `denied: ${d.message}`, is_error: d.behavior !== 'allow' }] } });
     out({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: d.behavior === 'allow' ? 'approved' : 'was denied' }] } });
   } else {
-    out({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: `echo: ${text}` }] } });
+    out({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: `echo: ${text}${images ? ` [images: ${images}]` : ''}` }] } });
   }
   out({ type: 'result', subtype: 'success', is_error: false, result: `done ${turns}`, num_turns: turns, session_id: sessionId });
 });
