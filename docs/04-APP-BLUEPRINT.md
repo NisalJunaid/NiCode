@@ -27,7 +27,9 @@
 - **Logs** (Server → Logs, or a project's Run tab): grouped sources; the viewer has filter, Live follow, wrap, error/warning colouring, and long-press lines → **Ask Claude**, which opens the project chat with the lines pre-filled.
 - **Images in chat**: attach up to 4 photos or screenshots (camera or library), resized on the phone before sending.
 - **Brand & theme**:
-  - Vector wordmark (`components/Logo.tsx`, glyph paths from Poppins via `scripts/make-logo-glyphs.py`); the launch intro (`AnimatedSplash`) plays over a black splash: Ni glides in, the blue/red capsule draws, the O pops, the e slides out, the tagline rises in.
+  - The NiCode wordmark (from `nicode.png`), redrawn as vector strokes in `components/Logo.tsx`; tagline glyphs come from Poppins Light via `scripts/make-logo-glyphs.py`.
+  - The launch intro (`AnimatedSplash`) starts once the system splash has gone. The blue→red infinity draws itself from the d's stem, the letters write in, the i's dot pops, a light runs along the infinity, and "Code Without Borders." fades in.
+  - Loading spinners use `LogoLoader`: the infinity drawing and un-drawing on a loop.
   - App icon: white "Ni" on black (`scripts/make-icons.py`).
   - Appearance setting: Dark (default) / Light / System, applied app-wide with `Appearance.setColorScheme`.
 - **Run tab & apps (pm2)**:

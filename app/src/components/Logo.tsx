@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { View } from 'react-native';
 import Animated, {
   Easing,
   interpolate,
@@ -7,82 +7,79 @@ import Animated, {
   useAnimatedStyle,
   useSharedValue,
   withDelay,
+  withRepeat,
   withSequence,
   withSpring,
   withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
-import Svg, { Circle, Path } from 'react-native-svg';
-import { BOLD, LIGHT } from './logoGlyphs';
+import Svg, { Circle, Defs, G, LinearGradient, Path, Stop } from 'react-native-svg';
+import { TAG, TAG_SPACE } from './logoGlyphs';
 
 /**
- * The niCode wordmark: "Ni", a blue/red capsule with an "O" in it, "e", and the CODE ANYWHERE tagline.
- * Everything is vector (glyph paths from Poppins), in "logo units"; `width` scales it.
- * `animated` plays the intro: Ni glides in from the centre, the capsule lines draw, the O draws and pops,
- * the e slides out, then the tagline letters rise in and a blue/red line grows under them.
+ * The NiCode wordmark, redrawn as vector strokes from nicode.png: monoline "N i C … e" and the
+ * blue→red infinity "od" (one continuous stroke, starting at the d's stem), plus the tagline
+ * "Code Without Borders.". Units are the original 318×101 artwork's pixels.
+ *
+ * `animated` plays the intro: the infinity draws itself, the letters write in, the i's dot pops,
+ * a light runs along the infinity, and the tagline fades in letter by letter.
  */
 
-export const BLUE = '#3B82C4';
-export const RED = '#E5232B';
+export const BLUE = '#0096C7';
+export const RED = '#E8202A';
+const MID = '#7A7B7E';
 
-// ── geometry (logo units) ──
-const FS = 0.1; // glyph units → logo units (font size 100)
-const H = 104; // wordmark height = capsule height
-const BASE = 87; // letter baseline (cap height centred on the capsule)
-const SW = 15; // capsule / O stroke
-const CAP_W = 235;
-const GAP = 6;
-const N_X = 0;
-const I_X = BOLD.N.adv * FS;
-const CAP_X = I_X + BOLD.i.adv * FS + GAP;
-const E_X = CAP_X + CAP_W + GAP;
-const W = E_X + BOLD.e.adv * FS;
+const VB_W = 318;
+const VB_H = 101;
+const VB_H_NO_TAG = 82;
+const SW = 11;
 
-const T = SW / 2;
-const R = (H - SW) / 2; // capsule end radius (stroke centre)
-const MID = CAP_W / 2;
-const BLUE_D = `M ${MID - 26} ${T} H ${T + R} A ${R} ${R} 0 0 0 ${T + R} ${H - T} H ${MID - 12}`;
-const RED_D = `M ${MID + 12} ${T} H ${CAP_W - T - R} A ${R} ${R} 0 0 1 ${CAP_W - T - R} ${H - T} H ${MID + 26}`;
-const LINE_LEN = 2 * (MID - T - R) - 38 + Math.PI * R + 1; // both straight runs + the arc, +1 so no gap remains
-const O_R = H / 2 - SW - SW / 2; // O's outer edge just touches the capsule's inner edge
-const O_LEN = 2 * Math.PI * O_R;
+// Infinity: stem down → right-lower quarter of the d → S to the o's top → the o's left half →
+// S to the d's top → right-upper quarter back to the stem.
+const INF_D =
+  'M248,1 V50 A23.5,23.5 0 0 1 224.5,73.5 C200.5,73.5 188,26.5 164,26.5 A23.5,23.5 0 0 0 164,73.5 C188,73.5 200.5,26.5 224.5,26.5 A23.5,23.5 0 0 1 248,50';
+const INF_LEN = 356;
+const N_D = 'M5.5,78 V13 L58.5,72 V7';
+const N_LEN = 210;
+const I_D = 'M78.5,28 V78';
+const I_LEN = 50;
+const C_D = 'M147.051,20.088 A29,32 0 1 0 144.905,65.281';
+const C_LEN = 143;
+const E_D = 'M263,50.5 H311 A24,24 0 1 0 305.385,65.927';
+const E_LEN = 183;
 
-// tagline
-const TAG = 'CODE ANYWHERE';
-const TFS = 0.024;
-const TRACK = 6;
-const WORD_GAP = 23;
-const TAG_Y = H + 36;
-const TAG_H = 24; // box for the glyphs (cap ≈ 17)
-const TAG_BASE = 20;
+// Tagline: Poppins Light, cap height 11, spread over x 43–268 with a baseline at 99.5.
+const TAG_TEXT = 'Code Without Borders.';
+const TAG_SCALE = 11 / 700;
+const TAG_TRACK = 2.6;
+const TAG_BASE = 99.5;
 const tagLetters = (() => {
-  const out: { ch: string; x: number; w: number }[] = [];
-  let x = 0;
-  for (const ch of TAG) {
-    if (ch === ' ') {
-      x += WORD_GAP - TRACK;
-      continue;
-    }
-    const w = LIGHT[ch].adv * TFS;
-    out.push({ ch, x, w });
-    x += w + TRACK;
+  const out: { ch: string; x: number }[] = [];
+  let x = 43;
+  for (const ch of TAG_TEXT) {
+    if (ch !== ' ') out.push({ ch, x });
+    x += (ch === ' ' ? TAG_SPACE : TAG[ch]!.adv) * TAG_SCALE + TAG_TRACK;
   }
-  const total = x - TRACK;
-  const off = (W - total) / 2;
-  return { letters: out.map((l) => ({ ...l, x: l.x + off })), total, off };
+  return out;
 })();
-const LINE_Y = TAG_Y + TAG_H + 12;
-export const LOGO_ASPECT = (LINE_Y + 4) / W;
 
 const APath = Animated.createAnimatedComponent(Path);
 const ACircle = Animated.createAnimatedComponent(Circle);
 
-/** One glyph, drawn at the wordmark's baseline. */
-function Glyph({ d, adv, scale, s, height, base, color }: { d: string; adv: number; scale: number; s: number; height: number; base: number; color: string }) {
+/** strokeDashoffset for a stroke drawn `p` (0..1) of the way. */
+function useDraw(p: SharedValue<number>, len: number) {
+  return useAnimatedProps(() => ({ strokeDashoffset: len * (1 - p.value) }));
+}
+
+function InfinityGradient({ id }: { id: string }) {
   return (
-    <Svg width={adv * scale * s} height={height * s} viewBox={`0 ${-base / scale} ${adv} ${height / scale}`}>
-      <Path d={d} fill={color} />
-    </Svg>
+    <Defs>
+      <LinearGradient id={id} gradientUnits="userSpaceOnUse" x1="138" y1="0" x2="253" y2="0">
+        <Stop offset="0" stopColor={BLUE} />
+        <Stop offset="0.45" stopColor={MID} />
+        <Stop offset="1" stopColor={RED} />
+      </LinearGradient>
+    </Defs>
   );
 }
 
@@ -92,6 +89,7 @@ export function Logo({
   tagColor,
   tagline = true,
   animated = false,
+  play = true,
   onDone,
 }: {
   width: number;
@@ -100,137 +98,102 @@ export function Logo({
   /** false = just the wordmark (e.g. in a header). */
   tagline?: boolean;
   animated?: boolean;
+  /** With `animated`: start once this is true (e.g. after the native splash has gone). */
+  play?: boolean;
   onDone?: () => void;
 }) {
-  const s = width / W;
   const start = animated ? 0 : 1;
-  const ni = useSharedValue(start);
-  const lines = useSharedValue(start);
-  const o = useSharedValue(start);
-  const oPop = useSharedValue(1);
+  const inf = useSharedValue(start);
+  const n = useSharedValue(start);
+  const i = useSharedValue(start);
+  const dot = useSharedValue(start);
+  const c = useSharedValue(start);
   const e = useSharedValue(start);
+  const shine = useSharedValue(0);
   const tag = useSharedValue(start);
-  const rule = useSharedValue(start);
+  const pulse = useSharedValue(1);
 
   useEffect(() => {
-    if (!animated) return;
-    const out = Easing.out(Easing.cubic);
-    ni.set(withDelay(250, withTiming(1, { duration: 650, easing: Easing.inOut(Easing.cubic) })));
-    lines.set(withDelay(450, withTiming(1, { duration: 800, easing: Easing.inOut(Easing.quad) })));
-    o.set(withDelay(800, withTiming(1, { duration: 500, easing: out })));
-    oPop.set(withDelay(1250, withSequence(withTiming(1.12, { duration: 140 }), withSpring(1, { damping: 8, stiffness: 180 }))));
-    e.set(withDelay(1050, withTiming(1, { duration: 450, easing: out })));
-    tag.set(withDelay(1350, withTiming(1, { duration: 750, easing: Easing.linear })));
-    rule.set(withDelay(1700, withTiming(1, { duration: 600, easing: out })));
+    if (!animated || !play) return;
+    const draw = (sv: SharedValue<number>, delay: number, duration: number) => sv.set(withDelay(delay, withTiming(1, { duration, easing: Easing.inOut(Easing.cubic) })));
+    draw(inf, 150, 1250);
+    draw(n, 450, 650);
+    draw(c, 550, 650);
+    draw(i, 700, 250);
+    dot.set(withDelay(900, withSpring(1, { damping: 7, stiffness: 220 })));
+    draw(e, 800, 600);
+    shine.set(withDelay(1400, withTiming(1, { duration: 900, easing: Easing.inOut(Easing.quad) })));
+    pulse.set(withDelay(1400, withSequence(withTiming(1.035, { duration: 180, easing: Easing.out(Easing.quad) }), withSpring(1, { damping: 9, stiffness: 160 }))));
+    tag.set(withDelay(1550, withTiming(1, { duration: 800, easing: Easing.linear })));
     if (onDone) {
-      const t = setTimeout(onDone, 2500);
+      const t = setTimeout(onDone, 2900);
       return () => clearTimeout(t);
     }
-  }, [animated, ni, lines, o, oPop, e, tag, rule, onDone]);
+  }, [animated, play, inf, n, i, dot, c, e, shine, tag, pulse, onDone]);
 
-  // "Ni" starts centred on the whole logo, a bit larger (matching the launch icon), then glides into place.
-  const dx = (W / 2 - CAP_X / 2) * s;
-  const dy = ((LOGO_ASPECT * W) / 2 - H / 2) * s;
-  const niStyle = useAnimatedStyle(() => ({
-    transform: [
-      { translateX: interpolate(ni.value, [0, 1], [dx, 0]) },
-      { translateY: interpolate(ni.value, [0, 1], [dy, 0]) },
-      { scale: interpolate(ni.value, [0, 1], [1.35, 1]) },
-    ],
+  const infProps = useDraw(inf, INF_LEN);
+  const nProps = useDraw(n, N_LEN);
+  const iProps = useDraw(i, I_LEN);
+  const cProps = useDraw(c, C_LEN);
+  const eProps = useDraw(e, E_LEN);
+  const dotProps = useAnimatedProps(() => ({ r: 7 * dot.value }));
+  // A short bright dash running once along the infinity.
+  const shineProps = useAnimatedProps(() => ({
+    strokeDashoffset: 40 - shine.value * (INF_LEN + 40),
+    strokeOpacity: interpolate(shine.value, [0, 0.08, 0.85, 1], [0, 0.85, 0.85, 0]),
   }));
-  const lineProps = useAnimatedProps(() => ({
-    strokeDashoffset: LINE_LEN * (1 - lines.value),
-  }));
-  const oProps = useAnimatedProps(() => ({
-    strokeDashoffset: O_LEN * (1 - o.value),
-  }));
-  const capStyle = useAnimatedStyle(() => ({
-    opacity: interpolate(lines.value, [0, 0.05], [0, 1], 'clamp'),
-  }));
-  const oStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: oPop.value }],
-  }));
-  const eStyle = useAnimatedStyle(() => ({
-    opacity: e.value,
-    transform: [{ translateX: interpolate(e.value, [0, 1], [-28 * s, 0]) }],
-  }));
-  const ruleL = useAnimatedStyle(() => ({
-    transform: [{ scaleX: rule.value }],
-    opacity: interpolate(rule.value, [0, 0.2, 1], [0, 1, 0.9]),
-  }));
+  const pulseStyle = useAnimatedStyle(() => ({ transform: [{ scale: pulse.value }] }));
 
-  const fg = color;
-  const tg = tagColor ?? color;
+  const vbH = tagline ? VB_H : VB_H_NO_TAG;
+  const height = (width * vbH) / VB_W;
+  const tc = tagColor ?? color;
+  const gid = animated ? 'nicodeGradA' : 'nicodeGrad';
+
   return (
-    <View style={{ width, height: tagline ? W * LOGO_ASPECT * s : H * s }} accessible accessibilityRole="image" accessibilityLabel="niCode, code anywhere">
-      <Animated.View style={[styles.abs, { left: N_X * s, flexDirection: 'row' }, niStyle]}>
-        <Glyph d={BOLD.N.d} adv={BOLD.N.adv} scale={FS} s={s} height={H} base={BASE} color={fg} />
-        <Glyph d={BOLD.i.d} adv={BOLD.i.adv} scale={FS} s={s} height={H} base={BASE} color={fg} />
-      </Animated.View>
-
-      <Animated.View style={[styles.abs, { left: E_X * s }, eStyle]}>
-        <Glyph d={BOLD.e.d} adv={BOLD.e.adv} scale={FS} s={s} height={H} base={BASE} color={fg} />
-      </Animated.View>
-
-      <Animated.View style={[styles.abs, { left: CAP_X * s }, capStyle]}>
-        <Svg width={CAP_W * s} height={H * s} viewBox={`0 0 ${CAP_W} ${H}`}>
-          <APath d={BLUE_D} stroke={BLUE} strokeWidth={SW} fill="none" strokeDasharray={[LINE_LEN, LINE_LEN]} animatedProps={lineProps} />
-          <APath d={RED_D} stroke={RED} strokeWidth={SW} fill="none" strokeDasharray={[LINE_LEN, LINE_LEN]} animatedProps={lineProps} />
-        </Svg>
-      </Animated.View>
-      <Animated.View style={[styles.abs, { left: CAP_X * s }, oStyle]}>
-        <Svg width={CAP_W * s} height={H * s} viewBox={`0 0 ${CAP_W} ${H}`}>
-          <ACircle
-            cx={MID}
-            cy={H / 2}
-            r={O_R}
-            stroke={fg}
-            strokeWidth={SW}
-            fill="none"
-            strokeDasharray={[O_LEN, O_LEN]}
-            animatedProps={oProps}
-            rotation={-90}
-            origin={`${MID}, ${H / 2}`}
-          />
-        </Svg>
-      </Animated.View>
-
-      {tagline && tagLetters.letters.map((l, i) => <TagLetter key={i} index={i} count={tagLetters.letters.length} progress={tag} x={l.x} ch={l.ch} s={s} color={tg} />)}
-
-      {tagline ? (
-        <View
-          style={[
-            styles.abs,
-            {
-              top: LINE_Y * s,
-              left: tagLetters.off * s,
-              width: tagLetters.total * s,
-              height: Math.max(1.5, 2 * s),
-              flexDirection: 'row',
-            },
-          ]}
-        >
-          <Animated.View style={[{ flex: 1, backgroundColor: BLUE, transformOrigin: 'right' }, ruleL]} />
-          <Animated.View style={[{ flex: 1, backgroundColor: RED, transformOrigin: 'left' }, ruleL]} />
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
-function TagLetter({ index, count, progress, x, ch, s, color }: { index: number; count: number; progress: SharedValue<number>; x: number; ch: string; s: number; color: string }) {
-  const style = useAnimatedStyle(() => {
-    const from = (index / count) * 0.6;
-    const p = interpolate(progress.value, [from, from + 0.4], [0, 1], 'clamp');
-    return { opacity: p, transform: [{ translateY: (1 - p) * 10 * s }] };
-  });
-  return (
-    <Animated.View style={[styles.abs, { left: x * s, top: TAG_Y * s }, style]}>
-      <Glyph d={LIGHT[ch].d} adv={LIGHT[ch].adv} scale={TFS} s={s} height={TAG_H} base={TAG_BASE} color={color} />
+    <Animated.View style={[{ width, height }, pulseStyle]} accessible accessibilityRole="image" accessibilityLabel="NiCode, Code Without Borders">
+      <Svg width={width} height={height} viewBox={`0 0 ${VB_W} ${vbH}`}>
+        <InfinityGradient id={gid} />
+        <G fill="none" stroke={color} strokeWidth={SW}>
+          <APath d={N_D} strokeLinejoin="bevel" strokeDasharray={[N_LEN, N_LEN]} animatedProps={nProps} />
+          <APath d={I_D} strokeDasharray={[I_LEN, I_LEN]} animatedProps={iProps} />
+          <APath d={C_D} strokeDasharray={[C_LEN, C_LEN]} animatedProps={cProps} />
+          <APath d={E_D} strokeDasharray={[E_LEN, E_LEN]} animatedProps={eProps} />
+        </G>
+        <ACircle cx={79} cy={15} fill={color} animatedProps={dotProps} />
+        <APath d={INF_D} fill="none" stroke={`url(#${gid})`} strokeWidth={SW} strokeDasharray={[INF_LEN, INF_LEN]} animatedProps={infProps} />
+        {animated ? (
+          <APath d={INF_D} fill="none" stroke="#FFFFFF" strokeWidth={SW * 0.45} strokeLinecap="round" strokeDasharray={[40, INF_LEN + 80]} animatedProps={shineProps} />
+        ) : null}
+        {tagline ? tagLetters.map((l, k) => <TagLetter key={k} index={k} count={tagLetters.length} progress={tag} x={l.x} ch={l.ch} color={tc} />) : null}
+      </Svg>
     </Animated.View>
   );
 }
 
-const styles = StyleSheet.create({
-  abs: { position: 'absolute', top: 0 },
-});
+function TagLetter({ index, count, progress, x, ch, color }: { index: number; count: number; progress: SharedValue<number>; x: number; ch: string; color: string }) {
+  const props = useAnimatedProps(() => {
+    const from = (index / count) * 0.65;
+    return { opacity: interpolate(progress.value, [from, from + 0.35], [0, 1], 'clamp') };
+  });
+  return <APath d={TAG[ch]!.d} fill={color} transform={`translate(${x.toFixed(2)} ${TAG_BASE}) scale(${TAG_SCALE})`} animatedProps={props} />;
+}
+
+/** Loading indicator: the infinity drawing itself and un-drawing, on a loop. */
+export function LogoLoader({ size = 64 }: { size?: number }) {
+  const p = useSharedValue(0);
+  useEffect(() => {
+    p.set(withRepeat(withTiming(2, { duration: 1800, easing: Easing.inOut(Easing.cubic) }), -1, false));
+  }, [p]);
+  // 0→1 draws from the stem, 1→2 erases from the stem: the stroke "travels" around the loop.
+  const props = useAnimatedProps(() => ({ strokeDashoffset: INF_LEN * (1 - p.value) }));
+  const h = (size * 92) / 132;
+  return (
+    <View accessible accessibilityRole="progressbar" accessibilityLabel="Loading">
+      <Svg width={size} height={h} viewBox="128 -6 132 92">
+        <InfinityGradient id="nicodeGradL" />
+        <Path d={INF_D} fill="none" stroke="url(#nicodeGradL)" strokeOpacity={0.15} strokeWidth={SW} />
+        <APath d={INF_D} fill="none" stroke="url(#nicodeGradL)" strokeWidth={SW} strokeLinecap="round" strokeDasharray={[INF_LEN, INF_LEN]} animatedProps={props} />
+      </Svg>
+    </View>
+  );
+}

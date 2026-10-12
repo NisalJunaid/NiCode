@@ -20,6 +20,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { HIT, font, radius, space, useColors } from '@/theme';
+import { LogoLoader } from './Logo';
 
 export type IconName = ComponentProps<typeof Ionicons>['name'];
 
@@ -338,10 +339,9 @@ export function EmptyState({ icon, title, body, action }: { icon: IconName; titl
 }
 
 export function Loading({ label }: { label?: string }) {
-  const c = useColors();
   return (
     <View style={[styles.empty, { flex: 1 }]}>
-      <ActivityIndicator color={c.accent} />
+      <LogoLoader size={56} />
       {label ? <T tone="dim">{label}</T> : null}
     </View>
   );

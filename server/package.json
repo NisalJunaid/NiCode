@@ -1,6 +1,6 @@
 {
   "name": "nicode-server",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "niCode daemon: runs Claude Code sessions, terminals, files and git for the niCode app",
   "private": true,
   "type": "module",
