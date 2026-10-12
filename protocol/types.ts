@@ -272,7 +272,8 @@ export interface Methods {
   'claude.permission.pending': [Record<string, never>, PermissionRequest[]];
 
   // Push
-  'push.register': [{ expoPushToken: string; platform: 'ios' | 'android' }, { ok: true }];
+  'push.register': [{ expoPushToken: string; platform: 'ios' | 'android'; prefs?: Partial<PushPrefs> }, { ok: true }];
+  'push.test': [Record<string, never>, { sent: number }];
 
   // Websites & domains (nginx). See docs/05 "Sites".
   'sites.status': [Record<string, never>, SitesStatus];
@@ -435,6 +436,14 @@ export interface ProjectTask {
   /** The exact command that will run. */
   command: string;
   group: 'install' | 'build' | 'script' | 'php' | 'git';
+}
+
+/** Which notifications a phone wants (all on by default). */
+export interface PushPrefs {
+  approvals: boolean;
+  finished: boolean;
+  appCrashes: boolean;
+  siteDown: boolean;
 }
 
 /** A log the server can show. Read by `id` only (the path is informational). */

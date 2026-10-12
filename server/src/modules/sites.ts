@@ -158,7 +158,7 @@ async function enabledSet(): Promise<Set<string>> {
   return new Set(await readdir(ENABLED).catch(() => [] as string[]));
 }
 
-async function listSites(): Promise<Site[]> {
+export async function listSites(): Promise<Site[]> {
   const names = (await readdir(AVAILABLE).catch(() => [] as string[])).filter((n) => !n.startsWith(PREVIEW_PREFIX));
   const enabled = await enabledSet();
   const sites = (await Promise.all(names.map((n) => readSite(n, enabled)))).filter((s): s is Site => !!s);

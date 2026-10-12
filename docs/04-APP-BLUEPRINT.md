@@ -43,7 +43,16 @@
 - **WebViews load xterm.js and highlight.js from jsDelivr** (pinned versions) instead of a bundled Vite build.
 - **Keyboard handling:** `react-native-keyboard-controller`, which is reliable with Android edge-to-edge.
 
-**Not built yet:** "Create a DigitalOcean server" and "Connect with SSH details" (pairing covers existing servers). Push notifications need an EAS project id plus FCM credentials (`eas init`, then `eas credentials`); until then the app skips push silently.
+**Not built yet:** "Create a DigitalOcean server" and "Connect with SSH details" (pairing covers existing servers). Push notifications need build credentials (below); until then the app skips push silently.
+
+### Push setup (one time, about 10 minutes)
+1. In `app/`, run `npx eas login` (free Expo account), then `npx eas init`. This writes `extra.eas.projectId` into app.json.
+2. In the Firebase console, create a project and add an **Android app** with package `com.nisaljunaid.nicode`. Download `google-services.json` into `app/` and set `"googleServicesFile": "./google-services.json"` under `android` in app.json.
+3. In Firebase, go to Project settings → Service accounts → Generate new private key. Then run `npx eas credentials` → Android → production → **FCM V1 service account key** → upload that JSON.
+4. Rebuild the app (`npx expo prebuild --platform android`, then `gradlew assembleRelease`).
+5. In the app, open Settings → Notifications → **Send a test notification**.
+
+Settings → Notifications has a switch per kind (approvals, finished, app crashed, site down). Tapping a notification opens the chat, the app, or the site.
 
 **Build an APK locally:** `cd app && npm run build:apk` produces `android/app/build/outputs/apk/release/app-release.apk` (signed with the debug key, fine for your own phone). Alternatively, use the EAS cloud: `npx eas-cli build -p android --profile preview`.
 

@@ -9,6 +9,7 @@ import { log } from './log.js';
 import { registerAppsModule } from './modules/apps.js';
 import { registerLogsModule } from './modules/logs.js';
 import { registerPreviewModule } from './modules/preview.js';
+import { startWatchers } from './modules/watch.js';
 import { initPreviewKey } from './preview/auth.js';
 import { startDevJanitor, stopAllDev } from './preview/dev.js';
 import { initClaudeModule, registerClaudeModule, shutdownClaude } from './modules/claude.js';
@@ -45,6 +46,7 @@ async function main(): Promise<void> {
   registerAppsModule();
   registerPreviewModule();
   registerLogsModule();
+  startWatchers();
   initPreviewKey(app.config.dataDir);
   startDevJanitor();
   await initClaudeModule();

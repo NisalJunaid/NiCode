@@ -98,7 +98,13 @@ While `SetupStatus.state` is `needs_claude_login`, only these methods are allowe
   - `remember: true` stores an allow rule for the project: the tool name, or for `Bash` the first word of the command, such as `npm`.
   - `updatedInput` lets the user edit the input before allowing (for example, tweak a command).
   - `deny` with a `message` is passed back to Claude as the reason.
-- **`push.register`**: idempotent. It stores the Expo push token.
+- **`push.register`**: idempotent. It stores the Expo push token with optional `prefs` (`PushPrefs`: approvals, finished, appCrashes, siteDown; all on by default). Each notification carries `data.kind` (`permission`, `result`, `app`, `site`, `test`), and phones only get the kinds they want.
+  - `push.test` sends a test notification to every registered phone and reports Expo errors.
+  - **Watchers** run while at least one phone is registered:
+    - a pm2 app turning `errored`, or restarting ≥3 times in 5 minutes (checked every 30 s);
+    - a niCode-managed site failing two HEAD checks in a row, and again when it is back up (checked every 5 min).
+
+    Each alert is sent at most once per hour, on the Android channel `alerts`.
 
 ## Events
 | Event | When |

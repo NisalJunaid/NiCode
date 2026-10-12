@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { PermissionMode } from '@protocol';
+import type { PermissionMode, PushPrefs } from '@protocol';
 import { kvStorage } from '@/lib/storage';
 
 interface SettingsState {
@@ -13,6 +13,8 @@ interface SettingsState {
   appearance: 'dark' | 'light' | 'system';
   /** Last preview source per project path. */
   lastPreview: Record<string, 'dev' | 'app' | 'domain'>;
+  /** Which push notifications this phone wants. */
+  notify: PushPrefs;
   set(patch: Partial<Omit<SettingsState, 'set'>>): void;
 }
 
@@ -24,6 +26,7 @@ export const useSettings = create<SettingsState>()(
       defaultModel: '',
       appearance: 'dark',
       lastPreview: {},
+      notify: { approvals: true, finished: true, appCrashes: true, siteDown: true },
       set: (patch) => set(patch),
     }),
     { name: 'nicode.settings', storage: kvStorage },

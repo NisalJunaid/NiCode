@@ -4,7 +4,10 @@ import { Alert, Switch, View } from 'react-native';
 import { MODE_INFO } from '@/components/chat/Composer';
 import { Logo } from '@/components/Logo';
 import { Divider, Row, Screen, Section, Segmented, T } from '@/components/ui';
+import { getClient } from '@/lib/connections';
 import { resetKey } from '@/lib/deviceKey';
+import { pushConfigured, pushReady, reRegisterPush } from '@/lib/push';
+import { errorMessage } from '@/lib/util';
 import { useHosts } from '@/state/hosts';
 import { useSettings } from '@/state/settings';
 import { useColors } from '@/theme';
@@ -28,6 +31,65 @@ export default function AppSettings() {
             ]}
           />
         </View>
+      </Section>
+
+      <Section
+        title="Notifications"
+        footer={
+          pushConfigured()
+            ? 'Sent by your servers through Expo push. Open a server once after changing these.'
+            : 'This build of the app has no push credentials yet (Expo project + Firebase). See docs/04 → Push setup.'
+        }
+      >
+        {(
+          [
+            ['approvals', 'hand-left-outline', 'Claude needs approval', 'Approve or deny without the app open'],
+            ['finished', 'checkmark-done-outline', 'Claude finished', 'When a chat turn is done'],
+            ['appCrashes', 'warning-outline', 'App crashed', 'A pm2 app errored or keeps restarting'],
+            ['siteDown', 'globe-outline', 'Site down', 'A website stops answering, and when it is back'],
+          ] as const
+        ).map(([key, icon, title, subtitle], i) => (
+          <View key={key}>
+            {i > 0 ? <Divider /> : null}
+            <Row
+              icon={icon}
+              title={title}
+              subtitle={subtitle}
+              chevron={false}
+              right={
+                <Switch
+                  value={s.notify[key]}
+                  disabled={!pushConfigured()}
+                  onValueChange={(v) => {
+                    s.set({ notify: { ...s.notify, [key]: v } });
+                    reRegisterPush();
+                  }}
+                  trackColor={{ true: c.accent, false: c.surface2 }}
+                  thumbColor="#fff"
+                />
+              }
+            />
+          </View>
+        ))}
+        <Divider />
+        <Row
+          icon="notifications-outline"
+          title="Send a test notification"
+          chevron={false}
+          onPress={async () => {
+            if (!pushConfigured()) return Alert.alert("Push isn't set up in this build", 'See docs/04 → Push setup.');
+            if (!(await pushReady())) return Alert.alert('Notifications are off', 'Allow notifications for niCode in system settings.');
+            const client = hosts.map((h) => getClient(h.id)).find((x) => x?.state === 'open');
+            if (!client) return Alert.alert('Connect to a server first', 'Open one of your servers, then try again.');
+            try {
+              reRegisterPush();
+              await client.call('push.test', {});
+              Alert.alert('Sent', 'It should arrive in a few seconds.');
+            } catch (err) {
+              Alert.alert("Couldn't send", errorMessage(err));
+            }
+          }}
+        />
       </Section>
 
       <Section title="Security" footer={s.graceSeconds === 0 ? 'Every connection asks for your fingerprint or face.' : 'After unlocking, reconnects within 5 minutes don\'t ask again.'}>
