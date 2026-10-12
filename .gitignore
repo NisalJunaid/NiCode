@@ -7,3 +7,4 @@ app/web/dist/
 *.log
 .env
 .env.*
+*.apk

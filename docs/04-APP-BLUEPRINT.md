@@ -2,6 +2,35 @@
 
 > **Audience:** Claude Code on Windows, building `app/` from scratch. Read [00-OVERVIEW](00-OVERVIEW.md) and [05-PROTOCOL](05-PROTOCOL.md) first. Toolchain setup is in [03-LOCAL-DEV-SETUP](03-LOCAL-DEV-SETUP.md). Import the shared types from [protocol/types.ts](../protocol/types.ts); never copy them.
 
+## Implementation status (app v0.1.0)
+**Built** (in `app/`, Expo SDK 57 / React Native 0.86, expo-router):
+- **Pair with QR / code** (`pair/scan`, `pair/manual`, `pair/confirm`): one-time code, then a fingerprint/face confirmation, then `POST /pair`.
+- **Signed login on every connection** (`lib/client.ts`), with auto-reconnect and backoff, plus clear states: locked (tap to unlock), unpaired (pair again), offline (retry).
+- **Projects list**, plus **New project** (`new-project`):
+  - **New app starters**: pick a framework (Next.js, React + Vite, Laravel, Node API, NestJS, Expo, FastAPI, Django, Astro, static, or blank), language, database (SQLite / PostgreSQL / MySQL / MongoDB) and extras (Tailwind, auth, Docker, tests, lint, CI), plus free-text notes.
+  - niCode creates the folder (git) and starts a Claude chat with a precise setup brief (`lib/starters.ts`). It uses each framework's official tooling and asks before installing system packages or creating databases.
+  - Also: clone from your GitHub repos, or from any git URL.
+- **Chat**:
+  - Markdown replies, and tool cards with one-line summaries (edits show an inline diff).
+  - A pinned **approval card** (Allow / Deny with reason / Always allow X), a stop button, a working timer, and a mode sheet (Ask first, Auto-edit, Plan only, Auto when the CLI supports it) plus model choice.
+  - A list of chats per project; history catches up after reconnects.
+- **Files**: breadcrumbs, live refresh, search (ripgrep), and a syntax-highlighted viewer with line numbers and wrap toggle. Edit and save with conflict detection.
+- **Changes**: branch with ahead/behind, Pull/Push, staged and unstaged groups, a diff viewer (stage/unstage), long-press to discard, and a commit box.
+- **Terminal**: xterm.js on the server's tmux (survives disconnects), with an extra-keys bar (esc, tab, sticky ctrl, ^C, arrows, symbols).
+- **Server settings**: status and versions, Claude and GitHub logins (in-app flows), and devices with access (remove any, including this phone).
+- **App settings**: "Ask every time" for biometrics, the default chat mode, and reset this phone's key.
+
+**Deviations from the plan below**
+- **Device key:** Ed25519 via `@noble/curves`. The private key is stored in SecureStore with `requireAuthentication`, so it's encrypted by the OS keystore and released only after biometrics (it's destroyed if biometrics change). It's held in memory for the grace period.
+  - This is not "sign inside the chip": no maintained Expo module offers that.
+  - A small native module can replace `lib/deviceKey.ts` later behind the same interface. The daemon already accepts RS256/ES256 hardware keys.
+- **WebViews load xterm.js and highlight.js from jsDelivr** (pinned versions) instead of a bundled Vite build.
+- **Keyboard handling:** `react-native-keyboard-controller`, which is reliable with Android edge-to-edge.
+
+**Not built yet:** "Create a DigitalOcean server" and "Connect with SSH details" (pairing covers existing servers). Push notifications need an EAS project id plus FCM credentials (`eas init`, then `eas credentials`); until then the app skips push silently.
+
+**Build an APK locally:** `cd app && npm run build:apk` produces `android/app/build/outputs/apk/release/app-release.apk` (signed with the debug key, fine for your own phone). Alternatively, use the EAS cloud: `npx eas-cli build -p android --profile preview`.
+
 ## Kickoff prompt (paste into Claude Code at the repo root, on Windows)
 ```
 Read CLAUDE.md, docs/00-OVERVIEW.md, docs/04-APP-BLUEPRINT.md and docs/05-PROTOCOL.md.

@@ -5,7 +5,8 @@ export const log = pino({
   level: process.env.NICODE_LOG_LEVEL ?? 'info',
   base: undefined,
   redact: {
-    paths: ['token', '*.token', 'authorization', '*.authorization', 'headers.authorization', 'CLAUDE_CODE_OAUTH_TOKEN', '*.CLAUDE_CODE_OAUTH_TOKEN', 'code', '*.code'],
+    // (Not `code`: error objects use it for ENOENT etc. Login/pairing codes are never logged.)
+    paths: ['token', '*.token', 'authorization', '*.authorization', 'headers.authorization', 'CLAUDE_CODE_OAUTH_TOKEN', '*.CLAUDE_CODE_OAUTH_TOKEN'],
     censor: '[redacted]',
   },
 });

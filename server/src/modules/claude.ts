@@ -49,6 +49,8 @@ function onResult(s: StoredSession, event: Record<string, unknown>): void {
   void sendPush(`${ok ? '✅' : '⚠️'} ${path.basename(s.projectPath)}`, (text || (ok ? 'Finished' : 'Stopped with an error')).slice(0, 120), {
     kind: 'result',
     sessionId: s.sessionId,
+    projectPath: s.projectPath,
+    host: app.config.publicHost,
   });
 }
 
@@ -59,7 +61,7 @@ export async function initClaudeModule(): Promise<void> {
     onWaiting: (id, waiting) => sessions.get(id)?.setWaiting(waiting),
     notify: (req) => {
       const d = describeTool(req);
-      void sendPush(`🔐 Approve ${req.toolName}?`, d || 'Claude needs your approval', { kind: 'permission', sessionId: req.sessionId, requestId: req.requestId }, 'approvals');
+      void sendPush(`🔐 Approve ${req.toolName}?`, d || 'Claude needs your approval', { kind: 'permission', sessionId: req.sessionId, requestId: req.requestId, projectPath: sessions.get(req.sessionId)?.s.projectPath, host: app.config.publicHost }, 'approvals');
     },
   });
   await broker.start();
