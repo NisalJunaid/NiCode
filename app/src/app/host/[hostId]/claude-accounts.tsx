@@ -2,9 +2,10 @@ import * as Haptics from 'expo-haptics';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
-import type { ClaudeAccount } from '@protocol';
+import type { AccountUsage, ClaudeAccount } from '@protocol';
+import { UsageBars } from '@/components/UsageBars';
 import { Banner, Button, Field, Icon, IconButton, Loading, T } from '@/components/ui';
-import { useConnection, useOnConnected } from '@/lib/connections';
+import { useConnection, useOnConnected, useServerEvent } from '@/lib/connections';
 import { errorMessage, relativeTime } from '@/lib/util';
 import { radius, space, useColors } from '@/theme';
 
@@ -20,8 +21,13 @@ export default function ClaudeAccounts() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; label: string } | null>(null);
+  const [usage, setUsage] = useState<Record<string, AccountUsage>>({});
 
-  const refreshInfo = () => client?.call('server.info', {}).then((i) => (client.info = i)).catch(() => undefined);
+  const refreshInfo = () =>
+    client
+      ?.call('server.info', {})
+      .then((i) => (client.info = i))
+      .catch(() => undefined);
 
   const load = useCallback(async () => {
     if (!client) return;
@@ -32,7 +38,13 @@ export default function ClaudeAccounts() {
       setError(errorMessage(err));
       setAccounts([]);
     }
+    // Usage: checked against Claude at most once a minute per account (the server limits it).
+    client
+      .call('setup.claudeAccounts.usage', { refresh: true }, 30_000)
+      .then((r) => setUsage(r.usage))
+      .catch(() => undefined);
   }, [client]);
+  useServerEvent(client, 'claude.usage', (e) => setUsage((u) => ({ ...u, [e.accountId]: e.usage })));
   useOnConnected(client, load);
   // Coming back from "Add another account" shows the new one.
   useFocusEffect(
@@ -76,7 +88,10 @@ export default function ClaudeAccounts() {
 
   const actions = (a: ClaudeAccount) =>
     a.kind === 'cli'
-      ? Alert.alert(a.label, 'This login was made on the server itself. It is used whenever none of your niCode accounts is active. To sign it out, run `claude /logout` on the server.')
+      ? Alert.alert(
+          a.label,
+          'This login was made on the server itself. It is used whenever none of your niCode accounts is active. To sign it out, run `claude /logout` on the server.',
+        )
       : Alert.alert(a.label, a.hint ? `Token ${a.hint}` : undefined, [
           ...(a.active ? [] : [{ text: 'Use this account', onPress: () => switchTo(a) }]),
           { text: 'Rename', onPress: () => setRenaming({ id: a.id, label: a.label }) },
@@ -113,16 +128,23 @@ export default function ClaudeAccounts() {
               { backgroundColor: pressed ? c.surfacePressed : a.active ? c.accentSoft : c.surface, borderColor: a.active ? c.accent : c.border },
             ]}
           >
-            <Icon name={a.active ? 'radio-button-on' : 'radio-button-off'} size={22} color={a.active ? c.accent : c.textFaint} />
-            <View style={{ flex: 1, gap: 2 }}>
-              <T weight="700">{a.label}</T>
-              <T size="sm" tone="dim">
-                {a.kind === 'cli'
-                  ? 'Logged in on the server itself'
-                  : [a.hint, a.active ? 'in use' : a.lastUsedAt ? `used ${relativeTime(a.lastUsedAt)}` : a.addedAt ? `added ${relativeTime(a.addedAt)}` : null].filter(Boolean).join(' · ')}
-              </T>
+            <View style={styles.head}>
+              <Icon name={a.active ? 'radio-button-on' : 'radio-button-off'} size={22} color={a.active ? c.accent : c.textFaint} />
+              <View style={{ flex: 1, gap: 2 }}>
+                <T weight="700">{a.label}</T>
+                <T size="sm" tone="dim">
+                  {a.kind === 'cli'
+                    ? 'Logged in on the server itself'
+                    : [a.hint, a.active ? 'in use' : a.lastUsedAt ? `used ${relativeTime(a.lastUsedAt)}` : a.addedAt ? `added ${relativeTime(a.addedAt)}` : null]
+                        .filter(Boolean)
+                        .join(' · ')}
+                </T>
+              </View>
+              {busy === a.id ? <ActivityIndicator color={c.accent} /> : <IconButton icon="ellipsis-horizontal" label={`Options for ${a.label}`} onPress={() => actions(a)} />}
             </View>
-            {busy === a.id ? <ActivityIndicator color={c.accent} /> : <IconButton icon="ellipsis-horizontal" label={`Options for ${a.label}`} onPress={() => actions(a)} />}
+            <View style={{ paddingLeft: 22 + space.md }}>
+              <UsageBars usage={usage[a.id]} />
+            </View>
           </Pressable>
           {renaming?.id === a.id ? (
             <View style={[styles.rename, { borderColor: c.border, backgroundColor: c.surface }]}>
@@ -148,7 +170,11 @@ export default function ClaudeAccounts() {
 
       {error ? <Banner tone="danger" icon="alert-circle-outline" title="That didn't work" body={error} /> : null}
 
-      <Button title={accounts.length ? 'Add another Claude account' : 'Log in to Claude'} icon="add" onPress={() => router.push({ pathname: '/host/[hostId]/claude-login', params: { hostId, add: '1' } })} />
+      <Button
+        title={accounts.length ? 'Add another Claude account' : 'Log in to Claude'}
+        icon="add"
+        onPress={() => router.push({ pathname: '/host/[hostId]/claude-login', params: { hostId, add: '1' } })}
+      />
       <T size="xs" tone="faint" style={{ textAlign: 'center' }}>
         Each account is a Claude Pro or Max subscription. Long-press an account to rename or log out.
       </T>
@@ -157,6 +183,7 @@ export default function ClaudeAccounts() {
 }
 
 const styles = StyleSheet.create({
-  card: { flexDirection: 'row', alignItems: 'center', gap: space.md, borderWidth: 1, borderRadius: radius.lg, padding: space.md },
+  card: { gap: space.md, borderWidth: 1, borderRadius: radius.lg, padding: space.md },
+  head: { flexDirection: 'row', alignItems: 'center', gap: space.md },
   rename: { marginTop: space.sm, gap: space.sm, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, padding: space.md },
 });

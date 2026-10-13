@@ -9,6 +9,7 @@ import { events } from '../events.js';
 import { log, maskSecrets } from '../log.js';
 import { RpcError } from '../rpc.js';
 import { LineSplitter } from '../util/exec.js';
+import { noteRateLimitEvent } from './usage.js';
 import { changes, CP_PREFIX, isGitRepo, prune, resolveRef, restoreFiles, saveRef, snapshot } from './checkpoints.js';
 import type { PermissionBroker } from './permissions.js';
 import type { SessionStore, StoredSession } from './store.js';
@@ -157,6 +158,7 @@ export class ClaudeSession {
     }
     this.record(event);
     this.watchTests(event);
+    if (event.type === 'rate_limit_event') void noteRateLimitEvent(event).catch(() => undefined);
     if (event.type === 'result') {
       this.busy = false;
       this.setState('idle');

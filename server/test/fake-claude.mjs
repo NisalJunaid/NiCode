@@ -49,6 +49,7 @@ rl.on('line', async (line) => {
   } else {
     // "write-file:<name>:<content>" edits the project; "run-tests" / "fail-tests" simulate a test run.
     for (const m of text.matchAll(/write-file:([\w.-]+):(\S+)/g)) writeFileSync(m[1], m[2] + '\n');
+    if (text.includes('rate-limit')) out({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed_warning', rateLimitType: 'five_hour', utilization: 0.83, resetsAt: 1791900000 }, session_id: sessionId });
     const tests = text.includes('run-tests') ? false : text.includes('fail-tests') ? true : null;
     if (tests !== null) {
       out({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu_t', name: 'Bash', input: { command: 'npm test -- --run' } }] } });

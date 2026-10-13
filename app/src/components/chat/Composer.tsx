@@ -2,13 +2,17 @@ import { Image } from 'expo-image';
 import { useState } from 'react';
 import { ActivityIndicator, Alert, Keyboard, Modal, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import type { PermissionMode } from '@protocol';
+import type { AccountUsage, PermissionMode } from '@protocol';
+import { UsagePill } from '../UsageBars';
 import { type Attachment, MAX_IMAGES, pickImages } from '@/lib/attachments';
 import { errorMessage } from '@/lib/util';
 import { font, radius, space, useColors } from '@/theme';
 import { Icon, IconButton, Segmented, T } from '../ui';
 
-export const MODE_INFO: Record<PermissionMode, { label: string; desc: string; icon: 'hand-left-outline' | 'create-outline' | 'map-outline' | 'flash-outline' | 'warning-outline' }> = {
+export const MODE_INFO: Record<
+  PermissionMode,
+  { label: string; desc: string; icon: 'hand-left-outline' | 'create-outline' | 'map-outline' | 'flash-outline' | 'warning-outline' }
+> = {
   default: { label: 'Ask first', desc: 'Claude asks before editing files or running commands.', icon: 'hand-left-outline' },
   acceptEdits: { label: 'Auto-edit', desc: 'Edits files freely; still asks before running commands.', icon: 'create-outline' },
   plan: { label: 'Plan only', desc: 'Reads and proposes a plan. Changes nothing.', icon: 'map-outline' },
@@ -32,6 +36,9 @@ interface Props {
   placeholder?: string;
   /** Pre-fills the message box once per `id` (e.g. "Ask Claude" from a log). */
   draft?: { id: string; text: string };
+  /** Usage of the Claude account in use (shown as a small meter). */
+  usage?: AccountUsage | null;
+  onUsagePress?: () => void;
   onSend: (text: string, attachments: Attachment[]) => Promise<boolean> | boolean;
   onStop: () => void;
   onChangeMode: (m: PermissionMode) => void;
@@ -39,7 +46,7 @@ interface Props {
 }
 
 /** Message box + mode/model chip + send/stop. Grows with the text; send never hides behind the keyboard. */
-export function Composer({ running, disabled, mode, model, modes, placeholder, draft, onSend, onStop, onChangeMode, onChangeModel }: Props) {
+export function Composer({ running, disabled, mode, model, modes, placeholder, draft, usage, onUsagePress, onSend, onStop, onChangeMode, onChangeModel }: Props) {
   const c = useColors();
   const insets = useSafeAreaInsets();
   const [text, setText] = useState(draft?.text ?? '');
@@ -91,14 +98,22 @@ export function Composer({ running, disabled, mode, model, modes, placeholder, d
 
   return (
     <View style={[styles.wrap, { backgroundColor: c.bg, borderTopColor: c.border, paddingBottom: space.sm }]}>
-      <Pressable accessibilityRole="button" accessibilityLabel={`Mode: ${info.label}. Change`} onPress={() => setSheet(true)} style={[styles.modeChip, { backgroundColor: c.surface2 }]}>
-        <Icon name={info.icon} size={14} color={mode === 'bypassPermissions' ? c.danger : c.accent} />
-        <T size="xs" weight="600">
-          {info.label}
-          {model ? ` · ${MODELS.find((m) => m.value === model)?.label ?? model}` : ''}
-        </T>
-        <Icon name="chevron-down" size={12} color={c.textDim} />
-      </Pressable>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Mode: ${info.label}. Change`}
+          onPress={() => setSheet(true)}
+          style={[styles.modeChip, { backgroundColor: c.surface2 }]}
+        >
+          <Icon name={info.icon} size={14} color={mode === 'bypassPermissions' ? c.danger : c.accent} />
+          <T size="xs" weight="600">
+            {info.label}
+            {model ? ` · ${MODELS.find((m) => m.value === model)?.label ?? model}` : ''}
+          </T>
+          <Icon name="chevron-down" size={12} color={c.textDim} />
+        </Pressable>
+        {onUsagePress ? <UsagePill usage={usage} onPress={onUsagePress} /> : null}
+      </View>
       {attachments.length || picking ? (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: space.sm }} keyboardShouldPersistTaps="handled">
           {attachments.map((a, i) => (

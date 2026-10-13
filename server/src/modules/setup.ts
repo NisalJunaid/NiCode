@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { app } from '../app.js';
-import { addAccount, listAccounts, logoutAccount, renameAccount, switchAccount } from '../claude/accounts.js';
+import { activeAccountId, addAccount, listAccounts, logoutAccount, renameAccount, switchAccount } from '../claude/accounts.js';
+import { getUsage } from '../claude/usage.js';
 import { events } from '../events.js';
 import { log, maskSecrets } from '../log.js';
 import { NoParams, register, RpcError } from '../rpc.js';
@@ -110,6 +111,10 @@ export function registerSetupModule(): void {
     return { accounts };
   });
   register('setup.claudeAccounts.rename', z.object({ id: z.string().max(64), label: z.string().trim().min(1).max(40) }), async ({ id, label }) => ({ accounts: await renameAccount(id, label) }));
+  register('setup.claudeAccounts.usage', z.object({ refresh: z.boolean().optional() }), async ({ refresh }) => ({
+    usage: await getUsage(!!refresh),
+    activeId: await activeAccountId(),
+  }));
   register('setup.claudeAccounts.logout', z.object({ id: z.string().max(64) }), async ({ id }) => {
     const r = await logoutAccount(id);
     await loginChanged();

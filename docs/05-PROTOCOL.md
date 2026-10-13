@@ -114,6 +114,11 @@ While `SetupStatus.state` is `needs_claude_login`, only these methods are allowe
   - `setup.claudeLogin.submit` and `setup.claudeLogin.setToken` take an optional `label` and `activate` (default true) and return `accountId`. A token that was already in the env file is adopted as "Account 1".
   - `list`, `switch {id}`, `rename {id, label}`, `logout {id}`. Logging out of the active account switches to the most recently used other one; with none left, the server returns to `needs_claude_login`.
   - After a switch or logout, idle Claude processes stop, and busy ones restart after their current turn. Every chat continues with the new account from its next message (`--resume`).
+- **Usage** (`setup.claudeAccounts.usage {refresh?}` → `{usage: {[accountId]: AccountUsage}, activeId}`): the 5-hour session and weekly windows per account, as % used plus reset time.
+  - `refresh` asks the usage endpoint Claude Code's own `/usage` screen reads (`/api/oauth/usage`, read-only; no inference cost), with each account's token. That's at most once a minute per account.
+  - During chats, Claude Code's `rate_limit_event`s (utilization as a 0–1 fraction) update the active account's window, with `source: "chat"`.
+  - Changes are pushed as `claude.usage {accountId, usage}`. Numbers are cached in `<dataDir>/claude-usage.json` without tokens.
+  - Neither source is an official API. If the endpoint refuses a token (some setup-tokens may lack the scope), `error` explains it and chat numbers are used.
 - **Images**: `claude.start` and `claude.send` accept `images: ImageInput[]` (up to 4; jpeg/png/webp/gif; ≤ 5 MB each as base64 without a `data:` prefix). They reach Claude as image blocks before the text. History keeps only `imageCount` on the `user_turn` marker, never the image data. The app resizes images to ≤ 1568 px JPEG before sending.
 - **`claude.interrupt`**: sends SIGINT. The session goes to `idle` once the process settles.
 - **`claude.setMode`**: takes effect on the next turn (the daemon respawns with `--resume` and the new flags if needed).

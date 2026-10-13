@@ -29,7 +29,7 @@
   - Three gates: what will happen → confirm → fresh fingerprint. Afterwards: Push, or **Undo this restore**.
   - **Restore points** lists earlier restores, so you can go back to any of them.
 - **Share to niCode**: share text, a link or screenshots from any app → pick the project (most recent first), new chat or continue the latest, add an instruction → sent to Claude.
-- **Claude accounts** (Server → Claude): several Claude subscriptions per server. Tap one to switch; long-press to rename or log out; add another with a name. Chats show **Switch account** when Claude reports a usage limit.
+- **Claude accounts** (Server → Claude): several Claude subscriptions per server, each with **5-hour session** and **weekly** usage bars (% used, % left, reset time; pull to refresh). The chat shows a small `5h 42% · wk 18%` meter for the account in use. Tap one to switch; long-press to rename or log out; add another with a name. Chats show **Switch account** when Claude reports a usage limit.
 - **Live preview** (eye icon in a project, Run tab, app cards, site detail): choose Dev server (start/stop, live output), Running app or Domain, then an in-app browser with back/forward/reload, phone ↔ desktop width, and open in the system browser.
 - **Logs** (Server → Logs, or a project's Run tab): grouped sources; the viewer has filter, Live follow, wrap, error/warning colouring, and long-press lines → **Ask Claude**, which opens the project chat with the lines pre-filled.
 - **Images in chat**: attach up to 4 photos or screenshots (camera or library), resized on the phone before sending.

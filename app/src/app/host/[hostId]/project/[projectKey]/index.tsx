@@ -4,7 +4,7 @@ import { router, useGlobalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { TabKeyboardAvoidingView } from '@/components/TabKeyboardAvoidingView';
-import type { ClaudeSessionSummary, PermissionMode } from '@protocol';
+import type { AccountUsage, ClaudeSessionSummary, PermissionMode } from '@protocol';
 import { Composer } from '@/components/chat/Composer';
 import { Markdown } from '@/components/chat/Markdown';
 import { PermissionCard } from '@/components/chat/PermissionCard';
@@ -16,7 +16,7 @@ import { type Attachment, rememberSent, sentThumbnails } from '@/lib/attachments
 import type { NicodeClient } from '@/lib/client';
 import { type ChatItem, buildChatItems } from '@/lib/chatItems';
 import { useProject } from '@/lib/project';
-import { useConnection, useOnConnected } from '@/lib/connections';
+import { useConnection, useOnConnected, useServerEvent } from '@/lib/connections';
 import { errorMessage, formatDuration, relativeTime } from '@/lib/util';
 import { useChat, useSessionSync } from '@/state/chat';
 import { useSettings } from '@/state/settings';
@@ -67,6 +67,19 @@ export default function ChatScreen() {
   const running = data.state === 'running' || data.state === 'awaiting_permission';
   const items = useMemo(() => buildChatItems(data.events), [data.events]);
   const reversed = useMemo(() => [...items].reverse(), [items]);
+  // Usage of the Claude account in use, for the meter above the message box.
+  const [usage, setUsage] = useState<{ activeId: string | null; usage: AccountUsage | null }>({ activeId: null, usage: null });
+  useOnConnected(
+    client,
+    useCallback(() => {
+      client
+        ?.call('setup.claudeAccounts.usage', { refresh: true }, 30_000)
+        .then((r) => setUsage({ activeId: r.activeId, usage: r.activeId ? (r.usage[r.activeId] ?? null) : null }))
+        .catch(() => undefined);
+    }, [client]),
+  );
+  useServerEvent(client, 'claude.usage', (e) => setUsage((u) => (e.accountId === u.activeId ? { ...u, usage: e.usage } : u)));
+
   const prompts = useMemo(() => new Map(items.flatMap((i) => (i.kind === 'user' ? [[i.turn, i.text] as const] : []))), [items]);
 
   /** Rewinds the project files to before a turn, or back to an undo point. */
@@ -172,6 +185,8 @@ export default function ChatScreen() {
         modes={info?.permissionModes ?? ['default', 'acceptEdits', 'plan']}
         placeholder={sessionId ? undefined : 'What should Claude do in this project?'}
         draft={draft && draftId ? { id: draftId, text: draft } : undefined}
+        usage={usage.usage}
+        onUsagePress={() => router.push({ pathname: '/host/[hostId]/claude-accounts', params: { hostId } })}
         onSend={send}
         onStop={() => sessionId && client?.call('claude.interrupt', { sessionId }).catch(() => undefined)}
         onChangeMode={changeMode}

@@ -155,3 +155,24 @@ export function logoutAccount(id: string): Promise<{ accounts: ClaudeAccount[]; 
     return { accounts: view(s), switchedTo };
   });
 }
+
+/** Tokens to check usage with: each niCode account, plus the server's own `claude /login` (if any). */
+export async function accountTokens(): Promise<{ id: string; token: string; active: boolean }[]> {
+  const s = await load();
+  const out = s.accounts.map((a) => ({ id: a.id, token: a.token, active: a.id === s.active }));
+  if (cliLoggedIn()) {
+    try {
+      const creds = JSON.parse(await readFile(path.join(app.home, '.claude', '.credentials.json'), 'utf8')) as { claudeAiOauth?: { accessToken?: string } };
+      if (creds.claudeAiOauth?.accessToken) out.push({ id: 'cli', token: creds.claudeAiOauth.accessToken, active: !s.active });
+    } catch {
+      // unreadable: no usage for it
+    }
+  }
+  return out;
+}
+
+/** Id of the account Claude currently runs with ('cli' for the server's own login, null if none). */
+export async function activeAccountId(): Promise<string | null> {
+  const s = await load();
+  return s.active ?? (cliLoggedIn() ? 'cli' : null);
+}

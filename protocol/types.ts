@@ -307,6 +307,8 @@ export interface Methods {
   'setup.claudeAccounts.switch': [{ id: string }, { accounts: ClaudeAccount[] }];
   'setup.claudeAccounts.rename': [{ id: string; label: string }, { accounts: ClaudeAccount[] }];
   'setup.claudeAccounts.logout': [{ id: string }, { accounts: ClaudeAccount[]; switchedTo: string | null }];
+  /** Usage per account id (refresh: ask Claude's usage endpoint again, at most once a minute per account). */
+  'setup.claudeAccounts.usage': [{ refresh?: boolean }, { usage: Record<string, AccountUsage>; activeId: string | null }];
   'setup.github.start': [Record<string, never>, { loginId: string; userCode: string; verificationUrl: string }];
   'setup.github.poll': [{ loginId: string }, { state: 'pending' | 'done' | 'failed'; login?: string; error?: string }];
   'auth.devices': [Record<string, never>, (DeviceInfo & { current: boolean })[]];
@@ -549,6 +551,25 @@ export interface ClaudeAccount {
   hint: string | null;
 }
 
+/** One usage window of a Claude subscription. */
+export interface UsageWindow {
+  /** 0–100 */
+  usedPercent: number;
+  resetsAt: string | null;
+}
+
+/** A Claude account's usage: the 5-hour session window and the weekly window. */
+export interface AccountUsage {
+  fiveHour: UsageWindow | null;
+  sevenDay: UsageWindow | null;
+  updatedAt: string;
+  /** api = Claude's usage endpoint; chat = limits Claude Code reported while chatting. */
+  source: 'api' | 'chat';
+  /** From chats: allowed / allowed_warning (getting close) / rejected (limit reached). */
+  status?: 'allowed' | 'allowed_warning' | 'rejected';
+  error?: string;
+}
+
 /** Which notifications a phone wants (all on by default). */
 export interface PushPrefs {
   approvals: boolean;
@@ -649,6 +670,7 @@ export interface Events {
   /** Output of a running task / build / deploy step (matched by opId). */
   'tasks.output': { opId: string; chunk: string };
   'logs.data': { followId: string; chunk: string };
+  'claude.usage': { accountId: string; usage: AccountUsage };
   /** Steps of apps.create / apps.deploy / apps.setup. */
   'tasks.step': { opId: string } & TaskStepState;
   /** Live steps of sites.create / sites.enableHttps (matched by the opId the app sent). */
