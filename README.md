@@ -11,8 +11,8 @@ Code with AI agents from your phone. niCode is a mobile alternative to VS Code R
 |---|---|
 | Server installer (`installer/`, `dist/nicode-install.sh`) | ✅ written; `--dry-run` tested |
 | Protocol (`protocol/types.ts`) | ✅ written |
-| Daemon (`server/`) | ✅ v0.6.0 (phone keys + signed logins, multiple Claude accounts, sites, pm2 apps & tasks, live preview, logs, push alerts); 65 tests passing, v0.1.0 verified on the droplet ([docs/02](docs/02-SERVER-BLUEPRINT.md)) |
-| App (`app/`) | ✅ v0.6.0: Claude account switching, animated NiCode logo, dark/light theme, images in chat, live preview, logs, notification settings, pairing, chat with approvals, new-app starters, files, changes, terminal, websites & domains (nginx + HTTPS), apps & builds (pm2) ([docs/04](docs/04-APP-BLUEPRINT.md)); DO/SSH onboarding not yet |
+| Daemon (`server/`) | ✅ v0.7.0 (phone keys + signed logins, multiple Claude accounts, checkpoints/undo, history + restore, sites, pm2 apps & tasks, live preview, logs, push alerts); 77 tests passing, v0.1.0 verified on the droplet ([docs/02](docs/02-SERVER-BLUEPRINT.md)) |
+| App (`app/`) | ✅ v0.7.0: undo per Claude turn, what-changed card, commit history + restore, Share to niCode, Claude account switching, animated NiCode logo, dark/light theme, images in chat, live preview, logs, notification settings, pairing, chat with approvals, new-app starters, files, changes, terminal, websites & domains (nginx + HTTPS), apps & builds (pm2) ([docs/04](docs/04-APP-BLUEPRINT.md)); DO/SSH onboarding not yet |
 
 ## Get started
 1. Read [docs/00-OVERVIEW.md](docs/00-OVERVIEW.md).

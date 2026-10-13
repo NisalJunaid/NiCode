@@ -2,6 +2,7 @@ import os from 'node:os';
 import { z } from 'zod';
 import { type DeviceInfo, PROTOCOL_VERSION } from '../../../protocol/types.js';
 import { app } from '../app.js';
+import { issueConfirmNonce } from '../auth/confirm.js';
 import { isExpired, isKeyDevice, isTokenDevice } from '../auth.js';
 import { type Device, updateDevices } from '../config.js';
 import { applyDeviceChange } from '../http.js';
@@ -58,6 +59,8 @@ export function registerServerModule(): void {
       device: deviceInfo(ctx.device),
     };
   });
+
+  register('auth.confirmChallenge', NoParams, () => issueConfirmNonce());
 
   register('auth.devices', NoParams, (_p, ctx) =>
     app.config.devices

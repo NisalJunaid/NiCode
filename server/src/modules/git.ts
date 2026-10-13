@@ -3,10 +3,14 @@ import type { GitCommit, GitFileStatus, GitStatus } from '../../../protocol/type
 import { resolveInProject } from '../paths.js';
 import { register, RpcError } from '../rpc.js';
 import { run, runOk } from '../util/exec.js';
+import { requireConfirmation } from '../auth/confirm.js';
 import { CP_REF_RE } from '../claude/checkpoints.js';
+import * as history from '../git/history.js';
+import { projectBusy } from './claude.js';
 import { projectOf } from './projects.js';
 
 const Hash = z.string().regex(/^[0-9a-f]{7,40}$/);
+const Proof = z.object({ nonce: z.string().min(16).max(100), sig: z.string().min(16).max(2000) });
 
 const env = (): NodeJS.ProcessEnv => ({ ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' });
 
@@ -133,18 +137,33 @@ export function registerGitModule(): void {
     return { ok: true as const, output: (r.stdout + r.stderr).trim() };
   });
 
-  register('git.log', z.object({ ...P, limit: z.number().int().min(1).max(500).optional() }), async ({ projectPath, limit }) => {
+  register('git.log', z.object({ ...P, limit: z.number().int().min(1).max(500).optional(), skip: z.number().int().min(0).max(1_000_000).optional() }), async ({ projectPath, limit, skip }) =>
+    history.log(await projectOf(projectPath), limit ?? 50, skip ?? 0),
+  );
+
+  register('git.show', z.object({ ...P, hash: Hash }), async ({ projectPath, hash }) => history.show(await projectOf(projectPath), hash));
+
+  register('git.restorePreview', z.object({ ...P, hash: Hash }), async ({ projectPath, hash }) => {
     const project = await projectOf(projectPath);
-    const r = await run('git', ['log', '-n', String(limit ?? 50), '--pretty=format:%H%x1f%an%x1f%aI%x1f%s'], { cwd: project, env: env() });
-    if (r.code !== 0) return []; // no commits yet
-    return r.stdout
-      .split('\n')
-      .filter(Boolean)
-      .map((l): GitCommit => {
-        const [hash = '', author = '', date = '', message = ''] = l.split('\x1f');
-        return { hash, author, date, message };
-      });
+    return history.preview(project, hash, projectBusy(project));
   });
+
+  // Destructive: needs a fresh biometric confirmation from the phone (auth.confirmChallenge).
+  register('git.restoreTo', z.object({ ...P, hash: Hash, mode: z.enum(['commit', 'reset']), proof: Proof }), async ({ projectPath, hash, mode, proof }, ctx) => {
+    const project = await projectOf(projectPath);
+    requireConfirmation(ctx, 'git.restoreTo', [projectPath, hash, mode], proof); // bound to exactly what the phone sent
+    if (projectBusy(project)) throw new RpcError('busy', 'Claude is working in this project. Stop it first.');
+    return history.restoreTo(project, hash, mode);
+  });
+
+  register('git.undoRestore', z.object({ ...P, backupRef: z.string().regex(history.BACKUP_RE), proof: Proof }), async ({ projectPath, backupRef, proof }, ctx) => {
+    const project = await projectOf(projectPath);
+    requireConfirmation(ctx, 'git.undoRestore', [projectPath, backupRef], proof);
+    if (projectBusy(project)) throw new RpcError('busy', 'Claude is working in this project. Stop it first.');
+    return history.undoRestore(project, backupRef);
+  });
+
+  register('git.backups', z.object(P), async ({ projectPath }) => history.backups(await projectOf(projectPath)));
 
   register('git.branches', z.object(P), async ({ projectPath }) => {
     const project = await projectOf(projectPath);

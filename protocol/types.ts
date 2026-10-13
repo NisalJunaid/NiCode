@@ -157,6 +157,64 @@ export interface GitCommit {
   author: string;
   date: string;
   message: string;
+  /** Branch/tag names pointing at this commit ("HEAD -> main", "origin/main", "tag: v1"). */
+  refs?: string[];
+  /** On the upstream branch already (null: no upstream). */
+  pushed?: boolean | null;
+}
+
+export interface GitCommitDetail extends GitCommit {
+  email: string;
+  body: string;
+  parents: string[];
+  files: TurnFileChange[];
+}
+
+/** What restoring to a commit would do (shown before asking for confirmation). */
+export interface RestorePreview {
+  hash: string;
+  subject: string;
+  /** Commits after it on the current branch. */
+  commitsAfter: number;
+  /** Files that would change (first 100) and the total. */
+  files: TurnFileChange[];
+  totalFiles: number;
+  /** Uncommitted changes exist (they are backed up first). */
+  dirty: boolean;
+  /** The commit is on the current branch (needed for "reset"). */
+  isAncestor: boolean;
+  /** Commits that a reset would drop are already pushed (a force push would be needed). */
+  pushedAfter: boolean;
+  /** Claude is running in this project (restoring is refused until it stops). */
+  busy: boolean;
+}
+
+export interface RestoreResult {
+  backupRef: string;
+  head: string;
+  removedCommits: number;
+  needsForcePush: boolean;
+}
+
+export interface GitBackup {
+  ref: string;
+  createdAt: string;
+  /** HEAD at the time of the backup. */
+  head: string;
+  subject: string;
+  hadUncommitted: boolean;
+}
+
+/** Proof that the phone's owner confirmed a destructive action with a fresh biometric unlock. */
+export interface ConfirmProof {
+  nonce: string;
+  /** base64 signature over confirmMessage(nonce, action, fields) with the device key. */
+  sig: string;
+}
+
+/** The exact string a device signs to confirm a destructive action (see auth.confirm). */
+export function confirmMessage(nonce: string, action: string, fields: string[]): string {
+  return `nicode-confirm:v1:${nonce}:${JSON.stringify([action, ...fields])}`;
 }
 
 /**
@@ -279,7 +337,15 @@ export interface Methods {
   'git.commit': [{ projectPath: string; message: string }, { hash: string }];
   'git.push': [{ projectPath: string }, { ok: true; output: string }];
   'git.pull': [{ projectPath: string }, { ok: true; output: string }];
-  'git.log': [{ projectPath: string; limit?: number }, GitCommit[]];
+  'git.log': [{ projectPath: string; limit?: number; skip?: number }, GitCommit[]];
+  'git.show': [{ projectPath: string; hash: string }, GitCommitDetail];
+  'git.restorePreview': [{ projectPath: string; hash: string }, RestorePreview];
+  /** commit = a new commit with the old code (history kept); reset = move the branch back (rewrites history). */
+  'git.restoreTo': [{ projectPath: string; hash: string; mode: 'commit' | 'reset'; proof: ConfirmProof }, RestoreResult];
+  'git.undoRestore': [{ projectPath: string; backupRef: string; proof: ConfirmProof }, { head: string }];
+  'git.backups': [{ projectPath: string }, GitBackup[]];
+  /** A nonce for a ConfirmProof (single use, 60 s). */
+  'auth.confirmChallenge': [Record<string, never>, { nonce: string; expiresAt: string }];
   'git.branches': [{ projectPath: string }, { current: string | null; all: string[] }];
   'git.checkout': [{ projectPath: string; branch: string; create?: boolean }, { ok: true }];
 

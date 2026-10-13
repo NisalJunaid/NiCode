@@ -33,6 +33,11 @@ function get(id: string): ClaudeSession {
   return s;
 }
 
+/** Claude is working in this project right now. */
+export function projectBusy(projectPath: string): boolean {
+  return [...sessions.values()].some((s) => s.busy && s.s.projectPath === projectPath);
+}
+
 function runningCount(): number {
   return [...sessions.values()].filter((s) => s.busy).length;
 }

@@ -127,6 +127,15 @@ export async function sign(message: string, reason?: string): Promise<string> {
 }
 
 /**
+ * Signs with a fresh fingerprint/face check, ignoring the grace period. Used to prove to the
+ * server that the owner confirmed a destructive action (see auth.confirmChallenge).
+ */
+export async function signFresh(message: string, reason: string): Promise<string> {
+  const sk = await readKey(reason);
+  return bytesToBase64(ed25519.sign(new TextEncoder().encode(message), sk));
+}
+
+/**
  * Always asks for fingerprint/face (or device passcode), regardless of the grace period.
  * Used for sensitive one-off actions like pairing a new server.
  */

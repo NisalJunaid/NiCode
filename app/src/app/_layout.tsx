@@ -67,6 +67,8 @@ function RootStack() {
             <Stack.Screen name="host/[hostId]/project/[projectKey]" options={{ title: '' }} />
             <Stack.Screen name="host/[hostId]/file" options={{ title: '' }} />
             <Stack.Screen name="host/[hostId]/diff" options={{ title: '' }} />
+            <Stack.Screen name="host/[hostId]/history" options={{ title: 'History' }} />
+            <Stack.Screen name="host/[hostId]/commit" options={{ title: '' }} />
             <Stack.Screen name="host/[hostId]/sessions" options={{ title: 'Chats', presentation: 'modal' }} />
             <Stack.Screen name="host/[hostId]/new-project" options={{ title: 'New project', presentation: 'modal' }} />
             <Stack.Screen name="host/[hostId]/sites" options={{ title: 'Websites & domains' }} />

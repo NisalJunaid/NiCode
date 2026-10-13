@@ -114,6 +114,13 @@ export default function Changes() {
               {status.ahead || status.behind ? `${status.ahead} to push · ${status.behind} to pull` : 'Up to date with remote'}
             </T>
           </View>
+          <Button
+            small
+            kind="ghost"
+            title="History"
+            icon="time-outline"
+            onPress={() => router.push({ pathname: '/host/[hostId]/history', params: { hostId, project: projectPath } })}
+          />
           <Button small kind="secondary" title="Pull" icon="arrow-down" loading={busy === 'Pull'} onPress={() => act('Pull', () => client!.call('git.pull', { projectPath }, 150_000))} />
           <Button small kind={status.ahead ? 'primary' : 'secondary'} title="Push" icon="arrow-up" loading={busy === 'Push'} onPress={() => act('Push', () => client!.call('git.push', { projectPath }, 150_000), 'Pushed')} />
         </View>

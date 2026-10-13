@@ -90,6 +90,17 @@ While `SetupStatus.state` is `needs_claude_login`, only these methods are allowe
 - **`term.close`**: `kill: true` kills the tmux session; otherwise it only detaches.
 - **`claude.start`**: creates a session, spawns the CLI, sends `prompt` as the first turn, and resolves immediately with the summary (`state: "running"`). The output streams as `claude.event`.
 - **`claude.send`**: `busy` while a turn is running; the app should queue the message or offer Stop. If the CLI process exited (idle timeout or crash), the daemon respawns it with `--resume`.
+- **History & restore**:
+  - `git.log {limit, skip}` includes `refs` (branch/tag names) and `pushed` (already on the upstream; null with no upstream). `git.show {hash}` → `GitCommitDetail` with files. `git.diff {commit, path}` shows one file's diff in that commit.
+  - `git.restorePreview {hash}` → `RestorePreview`: commits after it, files that would change, uncommitted work, whether it's on the branch, already-pushed newer commits, and whether Claude is busy.
+  - `git.restoreTo {hash, mode, proof}` first saves HEAD as `refs/nicode/backup/<ms>`, plus uncommitted work as `…-work`, and refuses while Claude is working in the project.
+    - `commit` mode makes the files equal that commit (`git restore --source --staged --worktree -- .`), then makes a new commit, so history is kept. Untracked files are left alone.
+    - `reset` mode runs `git reset --hard` to a commit on the current branch. `needsForcePush` tells the app; niCode never force-pushes.
+  - `git.undoRestore {backupRef, proof}` goes back to a restore point, including the uncommitted work. `git.backups` lists restore points; they are kept 30 days.
+- **Step-up confirmation** (`ConfirmProof`):
+  - Destructive actions take `proof: {nonce, sig}`. The nonce comes from `auth.confirmChallenge` (single use, 60 s).
+  - `sig` is the device key's signature over `confirmMessage(nonce, action, fields)`. For `git.restoreTo` the fields are `[projectPath, hash, mode]`; for `git.undoRestore` they are `[projectPath, backupRef]`, with `projectPath` exactly as sent.
+  - The app signs only after a fresh fingerprint/face check (ignoring the unlock grace period). Browser-token sessions can't confirm.
 - **Checkpoints** (git projects only):
   - Before every turn the daemon snapshots the project files into `refs/nicode/cp/<sessionId>/<turn>`: a temporary index → `write-tree` → `commit-tree`, without CRLF conversion. HEAD, the index, branches and the stash are never touched, and pushes don't include these refs.
   - `user_turn` carries `turn` and `checkpoint`.
