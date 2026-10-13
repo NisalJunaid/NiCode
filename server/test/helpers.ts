@@ -21,7 +21,7 @@ export interface TestDaemon {
 }
 
 /** Starts the compiled daemon (`npm run build` first) with a temp config and a git repo "demo". */
-export async function startDaemon(opts: { claudeToken?: string; env?: Record<string, string> } = {}): Promise<TestDaemon> {
+export async function startDaemon(opts: { claudeToken?: string; claudeBin?: string; env?: Record<string, string> } = {}): Promise<TestDaemon> {
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'nicode-daemon-'));
   const projectsRoot = path.join(tmp, 'projects');
   const demo = path.join(projectsRoot, 'demo');
@@ -53,7 +53,7 @@ export async function startDaemon(opts: { claudeToken?: string; env?: Record<str
       dataDir: path.join(tmp, 'data'),
       envFile,
       statusFile: path.join(tmp, 'status.json'),
-      claudeBin: path.join(tmp, 'no-claude-here'),
+      claudeBin: opts.claudeBin ?? path.join(tmp, 'no-claude-here'),
       appDir: tmp,
     }),
   );

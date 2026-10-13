@@ -108,7 +108,7 @@ export default function ClaudeLogin() {
             title={busy && step === 'code' ? 'Checking with Claude…' : 'Finish login'}
             loading={busy && step === 'code'}
             disabled={step !== 'code' || code.trim().length < 4}
-            onPress={() => finish(() => client!.call('setup.claudeLogin.submit', { loginId: loginId!, code: code.trim(), ...(label.trim() ? { label: label.trim() } : {}) }, 120_000))}
+            onPress={() => finish(() => client!.call('setup.claudeLogin.submit', { loginId: loginId!, code: code.trim(), ...(label.trim() ? { label: label.trim() } : {}) }, 200_000))}
           />
         </Card>
         {error ? <Banner tone="danger" icon="alert-circle-outline" title="Login didn't work" body={error} /> : null}

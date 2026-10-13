@@ -11,6 +11,21 @@ import { restartClaudeProcesses } from './claude.js';
 import { githubLoggedIn } from './server.js';
 
 const TOKEN_RE = /sk-ant-oat[0-9A-Za-z_-]+/;
+/** What `claude setup-token` prints when the pasted code is rejected. */
+const LOGIN_ERROR_RE = /(OAuth error[^\n]*|Invalid code[^\n]*|[Ee]rror:[^\n]*)/;
+
+/** The login link from the CLI's screen, cut cleanly (nothing glued onto the end of `state`). */
+export function cleanLoginUrl(raw: string): string {
+  const url = raw.replace(/Paste\s*code.*$/is, '').replace(/[)\].,;]+$/, '');
+  try {
+    const u = new URL(url);
+    const state = u.searchParams.get('state');
+    if (state) u.searchParams.set('state', state.match(/^[A-Za-z0-9_-]+/)?.[0] ?? state);
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
 
 let claudeLogin: { id: string; pty: PtyCapture } | null = null;
 const githubLogins = new Map<string, PtyCapture>();
@@ -58,17 +73,27 @@ export function registerSetupModule(): void {
       p.kill();
       throw new RpcError('internal', 'Claude did not show a login link', { output: maskSecrets(p.output.slice(-500)) });
     }
-    return { loginId: id, url: m[0] };
+    return { loginId: id, url: cleanLoginUrl(m[0]) };
   });
 
   register('setup.claudeLogin.submit', z.object({ loginId: z.string(), code: z.string().min(4).max(4096), label: Label, activate: z.boolean().optional() }), async ({ loginId, code, label, activate }) => {
     if (!claudeLogin || claudeLogin.id !== loginId) throw new RpcError('not_found', 'Login expired; start again');
     const p = claudeLogin.pty;
-    p.write(code.trim() + '\r');
-    const m = await p.waitFor(TOKEN_RE, 60_000);
+    const before = p.output.length;
+    // The code from the Claude page looks like "<code>#<state>"; type it, then press Enter.
+    p.write(code.trim().replace(/\s+/g, ''));
+    await new Promise((r) => setTimeout(r, 300));
+    p.write('\r');
+    const m = await p.waitFor(new RegExp(`${TOKEN_RE.source}|${LOGIN_ERROR_RE.source}`), 90_000, before);
     p.kill();
     claudeLogin = null;
-    if (!m) throw new RpcError('bad_request', 'Claude did not accept the code', { output: maskSecrets(p.output.slice(-500)) });
+    if (!m) throw new RpcError('bad_request', 'Claude did not answer after the code was entered. Start the login again.', { output: maskSecrets(p.output.slice(before).slice(-500)) });
+    if (!TOKEN_RE.test(m[0])) {
+      throw new RpcError(
+        'bad_request',
+        `Claude rejected the code (${m[0].trim()}). Codes work once and only for the login link they came from: tap "Open Claude login" again and paste the new code.`,
+      );
+    }
     return { ok: true as const, accountId: await saveAndVerifyClaudeToken(m[0], label, activate) };
   });
 
