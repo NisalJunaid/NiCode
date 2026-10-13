@@ -9,7 +9,18 @@ import { basename, errorMessage } from '@/lib/util';
 import { space } from '@/theme';
 
 export default function DiffScreen() {
-  const { hostId, project, path, staged } = useLocalSearchParams<{ hostId: string; project: string; path: string; staged?: string }>();
+  const { hostId, project, path, staged, base, head, commit } = useLocalSearchParams<{
+    hostId: string;
+    project: string;
+    path: string;
+    staged?: string;
+    /** A Claude turn's checkpoints (read-only view). */
+    base?: string;
+    head?: string;
+    /** One commit (read-only view). */
+    commit?: string;
+  }>();
+  const readOnly = !!(base || commit);
   const isStaged = staged === '1';
   const { client } = useConnection(hostId);
   const [diff, setDiff] = useState<string | null>(null);
@@ -20,10 +31,10 @@ export default function DiffScreen() {
     client,
     useCallback(() => {
       client
-        ?.call('git.diff', { projectPath: project, path, staged: isStaged })
+        ?.call('git.diff', base ? { projectPath: project, path, base, ...(head ? { head } : {}) } : commit ? { projectPath: project, path, commit } : { projectPath: project, path, staged: isStaged })
         .then((r) => setDiff(r.diff))
         .catch((e) => setError(errorMessage(e)));
-    }, [client, project, path, isStaged]),
+    }, [client, project, path, isStaged, base, head, commit]),
   );
   const lines = useMemo(() => (diff ? parseUnifiedDiff(diff) : []), [diff]);
   const adds = lines.filter((l) => l.type === 'add').length;
@@ -44,7 +55,12 @@ export default function DiffScreen() {
 
   return (
     <>
-      <Stack.Screen options={{ title: basename(path), headerRight: () => <Button small kind="secondary" title={isStaged ? 'Unstage' : 'Stage'} loading={busy} onPress={toggle} /> }} />
+      <Stack.Screen
+        options={{
+          title: basename(path),
+          headerRight: readOnly ? undefined : () => <Button small kind="secondary" title={isStaged ? 'Unstage' : 'Stage'} loading={busy} onPress={toggle} />,
+        }}
+      />
       {error ? (
         <EmptyState icon="alert-circle-outline" title="Couldn't load the diff" body={error} />
       ) : diff === null ? (

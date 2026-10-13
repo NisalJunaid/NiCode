@@ -3,7 +3,7 @@
 // MCP approve tool from --mcp-config exactly like the CLI's --permission-prompt-tool would.
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import readline from 'node:readline';
 
 const args = process.argv.slice(2);
@@ -47,6 +47,13 @@ rl.on('line', async (line) => {
     out({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: d.behavior === 'allow' ? 'written' : `denied: ${d.message}`, is_error: d.behavior !== 'allow' }] } });
     out({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: d.behavior === 'allow' ? 'approved' : 'was denied' }] } });
   } else {
+    // "write-file:<name>:<content>" edits the project; "run-tests" / "fail-tests" simulate a test run.
+    for (const m of text.matchAll(/write-file:([\w.-]+):(\S+)/g)) writeFileSync(m[1], m[2] + '\n');
+    const tests = text.includes('run-tests') ? false : text.includes('fail-tests') ? true : null;
+    if (tests !== null) {
+      out({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu_t', name: 'Bash', input: { command: 'npm test -- --run' } }] } });
+      out({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_t', content: tests ? 'FAIL' : 'PASS', is_error: tests }] } });
+    }
     out({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: `echo: ${text}${images ? ` [images: ${images}]` : ''}` }] } });
   }
   out({ type: 'result', subtype: 'success', is_error: false, result: `done ${turns}`, num_turns: turns, session_id: sessionId });

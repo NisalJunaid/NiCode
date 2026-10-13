@@ -122,6 +122,13 @@ export function registerClaudeModule(): void {
     return { ok: true as const };
   });
 
+  register('claude.rewind', z.object({ sessionId: z.string(), turn: z.number().int().min(0).optional(), ref: z.string().max(200).optional() }), async ({ sessionId, turn, ref }) => {
+    const s = get(sessionId);
+    if (turn !== undefined) return s.rewind({ turn });
+    if (ref) return s.rewind({ ref });
+    throw new RpcError('bad_request', 'Give a turn or an undo point');
+  });
+
   register('claude.interrupt', z.object({ sessionId: z.string() }), ({ sessionId }) => {
     get(sessionId).interrupt();
     return { ok: true as const };

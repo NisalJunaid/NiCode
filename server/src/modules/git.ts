@@ -3,7 +3,10 @@ import type { GitCommit, GitFileStatus, GitStatus } from '../../../protocol/type
 import { resolveInProject } from '../paths.js';
 import { register, RpcError } from '../rpc.js';
 import { run, runOk } from '../util/exec.js';
+import { CP_REF_RE } from '../claude/checkpoints.js';
 import { projectOf } from './projects.js';
+
+const Hash = z.string().regex(/^[0-9a-f]{7,40}$/);
 
 const env = (): NodeJS.ProcessEnv => ({ ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' });
 
@@ -23,7 +26,10 @@ export function parseStatus(out: string): GitStatus {
     if (p.startsWith('## ')) {
       // "main...origin/main [ahead 1, behind 2]" | "main" | "No commits yet on main" | "HEAD (no branch)"
       const head = p.slice(3);
-      const name = head.replace(/^(No commits yet on|Initial commit on) /, '').split('...')[0]!.split(' ')[0]!;
+      const name = head
+        .replace(/^(No commits yet on|Initial commit on) /, '')
+        .split('...')[0]!
+        .split(' ')[0]!;
       res.branch = head.startsWith('HEAD (no branch)') ? null : name || null;
       res.ahead = Number(/ahead (\d+)/.exec(head)?.[1] ?? 0);
       res.behind = Number(/behind (\d+)/.exec(head)?.[1] ?? 0);
@@ -50,22 +56,39 @@ export function registerGitModule(): void {
     return parseStatus((await git(project, ['status', '--porcelain=v1', '-b', '-z'])).stdout);
   });
 
-  register('git.diff', z.object({ ...P, path: z.string().optional(), staged: z.boolean().optional() }), async ({ projectPath, path, staged }) => {
-    const project = await projectOf(projectPath);
-    if (path) await resolveInProject(project, path);
-    if (path && !staged) {
-      // Untracked files have no diff against the index; show them as all-added.
-      const st = parseStatus((await git(project, ['status', '--porcelain=v1', '-z', '--', path])).stdout);
-      if (st.files[0]?.index === '?') {
-        const r = await run('git', ['diff', '--no-color', '--no-index', '--', '/dev/null', path], { cwd: project, env: env(), okCodes: [0, 1] });
-        return { diff: r.stdout };
+  const CpRef = z.string().regex(CP_REF_RE);
+  register(
+    'git.diff',
+    z.object({ ...P, path: z.string().optional(), staged: z.boolean().optional(), base: CpRef.optional(), head: CpRef.optional(), commit: Hash.optional() }),
+    async ({ projectPath, path, staged, base, head, commit }) => {
+      const project = await projectOf(projectPath);
+      if (path) await resolveInProject(project, path);
+      if (commit) {
+        // One commit's changes (Phase 6 history).
+        const args = ['show', '--no-color', '--no-ext-diff', '--format=', '-M', commit];
+        if (path) args.push('--', path);
+        return { diff: (await git(project, args)).stdout };
       }
-    }
-    const args = ['diff', '--no-color', '--no-ext-diff'];
-    if (staged) args.push('--cached');
-    if (path) args.push('--', path);
-    return { diff: (await git(project, args)).stdout };
-  });
+      if (base) {
+        // One Claude turn's changes: checkpoint before → after (or → the files now).
+        const args = ['diff', '--no-color', '--no-ext-diff', '-M', base, ...(head ? [head] : []), '--relative'];
+        if (path) args.push('--', path);
+        return { diff: (await git(project, args)).stdout };
+      }
+      if (path && !staged) {
+        // Untracked files have no diff against the index; show them as all-added.
+        const st = parseStatus((await git(project, ['status', '--porcelain=v1', '-z', '--', path])).stdout);
+        if (st.files[0]?.index === '?') {
+          const r = await run('git', ['diff', '--no-color', '--no-index', '--', '/dev/null', path], { cwd: project, env: env(), okCodes: [0, 1] });
+          return { diff: r.stdout };
+        }
+      }
+      const args = ['diff', '--no-color', '--no-ext-diff'];
+      if (staged) args.push('--cached');
+      if (path) args.push('--', path);
+      return { diff: (await git(project, args)).stdout };
+    },
+  );
 
   register('git.stage', Paths, async ({ projectPath, paths }) => {
     const project = await projectOf(projectPath);

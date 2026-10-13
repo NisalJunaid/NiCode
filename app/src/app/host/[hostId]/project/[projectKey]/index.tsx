@@ -1,16 +1,19 @@
+import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import { router, useGlobalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { TabKeyboardAvoidingView } from '@/components/TabKeyboardAvoidingView';
 import type { ClaudeSessionSummary, PermissionMode } from '@protocol';
 import { Composer } from '@/components/chat/Composer';
 import { Markdown } from '@/components/chat/Markdown';
 import { PermissionCard } from '@/components/chat/PermissionCard';
 import { ToolCard } from '@/components/chat/ToolCard';
+import { TurnSummaryCard } from '@/components/chat/TurnSummaryCard';
 import { ConnectionBar } from '@/components/ConnectionBar';
 import { Banner, Button, Icon, T } from '@/components/ui';
 import { type Attachment, rememberSent, sentThumbnails } from '@/lib/attachments';
+import type { NicodeClient } from '@/lib/client';
 import { type ChatItem, buildChatItems } from '@/lib/chatItems';
 import { useProject } from '@/lib/project';
 import { useConnection, useOnConnected } from '@/lib/connections';
@@ -64,6 +67,21 @@ export default function ChatScreen() {
   const running = data.state === 'running' || data.state === 'awaiting_permission';
   const items = useMemo(() => buildChatItems(data.events), [data.events]);
   const reversed = useMemo(() => [...items].reverse(), [items]);
+  const prompts = useMemo(() => new Map(items.flatMap((i) => (i.kind === 'user' ? [[i.turn, i.text] as const] : []))), [items]);
+
+  /** Rewinds the project files to before a turn, or back to an undo point. */
+  const rewind = async (target: { turn: number } | { ref: string }) => {
+    if (!client || !sessionId) return;
+    setSendError(null);
+    try {
+      await client.call('claude.rewind', { sessionId, ...target }, 120_000);
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (err) {
+      setSendError(errorMessage(err));
+    }
+  };
+  const row = { sessionId, running, client, hostId, projectPath, prompts, rewind };
+
   const turnStart = useMemo(() => [...data.events].reverse().find((e) => e.event.type === 'nicode' && e.event.subtype === 'user_turn')?.ts, [data.events]);
 
   const send = async (text: string, attachments: Attachment[] = []): Promise<boolean> => {
@@ -123,7 +141,7 @@ export default function ChatScreen() {
             inverted
             data={reversed}
             keyExtractor={(i) => i.key}
-            renderItem={({ item, index }) => <ChatRow item={item} sessionId={sessionId} pending={running && index < 6} />}
+            renderItem={({ item, index }) => <ChatRow item={item} ctx={row} pending={running && index < 6} />}
             contentContainerStyle={{ padding: space.md, gap: space.sm }}
             ListHeaderComponent={running ? <Working started={turnStart} /> : null}
             keyboardShouldPersistTaps="handled"
@@ -171,13 +189,53 @@ function SwitchAccountButton() {
   return <Button small kind="secondary" title="Switch account" icon="swap-horizontal" onPress={() => router.push({ pathname: '/host/[hostId]/claude-accounts', params: { hostId } })} />;
 }
 
-function ChatRow({ item, sessionId, pending }: { item: ChatItem; sessionId: string | null | undefined; pending: boolean }) {
+interface RowCtx {
+  sessionId: string | null | undefined;
+  running: boolean;
+  client: NicodeClient | null;
+  hostId: string;
+  projectPath: string;
+  prompts: Map<number, string>;
+  rewind: (target: { turn: number } | { ref: string }) => Promise<void>;
+}
+
+function ChatRow({ item, ctx, pending }: { item: ChatItem; ctx: RowCtx; pending: boolean }) {
   const c = useColors();
+  const { sessionId } = ctx;
   switch (item.kind) {
+    case 'summary':
+      return (
+        <TurnSummaryCard
+          summary={item.summary}
+          prompt={ctx.prompts.get(item.summary.turn) ?? ''}
+          hostId={ctx.hostId}
+          projectPath={ctx.projectPath}
+          client={ctx.client}
+          disabled={ctx.running}
+          onUndo={() => void ctx.rewind({ turn: item.summary.turn })}
+        />
+      );
+    case 'rewind':
+      return (
+        <View style={[styles.meta, { backgroundColor: c.surface2, borderRadius: radius.md, padding: space.sm }]}>
+          <Icon name="arrow-undo-outline" size={14} color={c.accent} />
+          <T size="xs" tone="dim" style={{ flex: 1 }}>
+            {item.turn !== null ? 'Files rewound to before an earlier message' : 'Rewind undone'} · {item.changed} file{item.changed === 1 ? '' : 's'}
+          </T>
+          <Button small kind="ghost" title="Undo" disabled={ctx.running} onPress={() => void ctx.rewind({ ref: item.undoRef })} />
+        </View>
+      );
     case 'user': {
       const thumbs = item.imageCount ? sentThumbnails(sessionId, item.turn) : [];
+      const rewindHere = item.checkpoint && !ctx.running
+        ? () =>
+            Alert.alert('Rewind files to before this message?', "Every file goes back to how it was just before you sent this. The chat history stays, and you can undo the rewind.", [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Rewind', style: 'destructive', onPress: () => void ctx.rewind({ turn: item.turn }) },
+            ])
+        : undefined;
       return (
-        <View style={[styles.user, { backgroundColor: c.userBubble }]}>
+        <Pressable onLongPress={rewindHere} delayLongPress={350} style={[styles.user, { backgroundColor: c.userBubble }]}>
           {thumbs.length ? (
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
               {thumbs.map((u) => (
@@ -192,8 +250,8 @@ function ChatRow({ item, sessionId, pending }: { item: ChatItem; sessionId: stri
               </T>
             </View>
           ) : null}
-          <T selectable>{item.text}</T>
-        </View>
+          <T selectable={!rewindHere}>{item.text}</T>
+        </Pressable>
       );
     }
     case 'text':

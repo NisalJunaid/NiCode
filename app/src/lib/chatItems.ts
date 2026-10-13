@@ -2,10 +2,12 @@
  * Turns the raw Claude stream (SeqEvent[]) into chat items. Pure function, easy to test.
  * Tool results are merged into the card of the tool call they answer.
  */
-import type { SeqEvent } from '@protocol';
+import type { SeqEvent, TurnSummary } from '@protocol';
 
 export type ChatItem =
-  | { kind: 'user'; key: string; text: string; turn: number; imageCount: number }
+  | { kind: 'user'; key: string; text: string; turn: number; imageCount: number; checkpoint: string | null }
+  | { kind: 'summary'; key: string; summary: TurnSummary }
+  | { kind: 'rewind'; key: string; turn: number | null; undoRef: string; changed: number }
   | { kind: 'text'; key: string; text: string }
   | { kind: 'thinking'; key: string; text: string }
   | { kind: 'tool'; key: string; id: string; name: string; input: Record<string, unknown>; result?: { text: string; isError: boolean } }
@@ -41,7 +43,13 @@ export function buildChatItems(events: SeqEvent[]): ChatItem[] {
       case 'nicode': {
         const sub = ev.subtype as string | undefined;
         const text = typeof ev.text === 'string' ? ev.text : '';
-        if (sub === 'user_turn') items.push({ kind: 'user', key, text, turn: turn++, imageCount: typeof ev.imageCount === 'number' ? ev.imageCount : 0 });
+        if (sub === 'user_turn') {
+          const n = typeof ev.turn === 'number' ? ev.turn : turn;
+          turn = n + 1;
+          items.push({ kind: 'user', key, text, turn: n, imageCount: typeof ev.imageCount === 'number' ? ev.imageCount : 0, checkpoint: typeof ev.checkpoint === 'string' ? ev.checkpoint : null });
+        } else if (sub === 'turn_summary' && Array.isArray(ev.files)) items.push({ kind: 'summary', key, summary: ev as unknown as TurnSummary });
+        else if (sub === 'rewind' && typeof ev.undoRef === 'string')
+          items.push({ kind: 'rewind', key, turn: typeof ev.turn === 'number' ? ev.turn : null, undoRef: ev.undoRef, changed: typeof ev.changed === 'number' ? ev.changed : 0 });
         else if (sub === 'interrupted') items.push({ kind: 'notice', key, tone: 'info', text: 'Stopped' });
         else if (sub === 'process_exit') items.push({ kind: 'notice', key, tone: 'danger', text: text || 'Claude stopped unexpectedly' });
         else if (sub === 'stderr' && text.trim()) items.push({ kind: 'notice', key, tone: 'warning', text });

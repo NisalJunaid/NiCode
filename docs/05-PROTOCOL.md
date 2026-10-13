@@ -90,6 +90,13 @@ While `SetupStatus.state` is `needs_claude_login`, only these methods are allowe
 - **`term.close`**: `kill: true` kills the tmux session; otherwise it only detaches.
 - **`claude.start`**: creates a session, spawns the CLI, sends `prompt` as the first turn, and resolves immediately with the summary (`state: "running"`). The output streams as `claude.event`.
 - **`claude.send`**: `busy` while a turn is running; the app should queue the message or offer Stop. If the CLI process exited (idle timeout or crash), the daemon respawns it with `--resume`.
+- **Checkpoints** (git projects only):
+  - Before every turn the daemon snapshots the project files into `refs/nicode/cp/<sessionId>/<turn>`: a temporary index → `write-tree` → `commit-tree`, without CRLF conversion. HEAD, the index, branches and the stash are never touched, and pushes don't include these refs.
+  - `user_turn` carries `turn` and `checkpoint`.
+  - After the turn, a `turn_summary` marker (`TurnSummary`) lists the changed files (+/−), the totals, the last test run Claude did (detected from its Bash calls) and the before/after refs (`…/<turn>-after`).
+  - `git.diff {base, head}` shows one turn's diff.
+  - `claude.rewind {sessionId, turn}` (or `{ref}` for an undo point) makes the files match the checkpoint, deleting files created since. It returns `{changed, undoRef}`, records a `rewind` marker, and adds a short note to the next message so Claude re-reads the files.
+  - It is refused while Claude is running. The newest 200 refs per project are kept.
 - **Claude accounts** (`setup.claudeAccounts.*`, also allowed before Claude is logged in):
   - Each `claude setup-token` login is kept on the server as a named account in `<dataDir>/claude-accounts.json` (mode 600). The active one is mirrored into the env file as `CLAUDE_CODE_OAUTH_TOKEN`.
   - Tokens never leave the server: `ClaudeAccount` has id, label, kind (`token`, or `cli` for a `claude /login` made on the server), active, dates, and the token's last 4 characters.

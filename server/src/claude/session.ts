@@ -7,7 +7,9 @@ import { app } from '../app.js';
 import { writeFileAtomic } from '../config.js';
 import { events } from '../events.js';
 import { log, maskSecrets } from '../log.js';
+import { RpcError } from '../rpc.js';
 import { LineSplitter } from '../util/exec.js';
+import { changes, CP_PREFIX, isGitRepo, prune, resolveRef, restoreFiles, saveRef, snapshot } from './checkpoints.js';
 import type { PermissionBroker } from './permissions.js';
 import type { SessionStore, StoredSession } from './store.js';
 
@@ -30,9 +32,12 @@ export interface SessionDeps {
 }
 
 export function publicSummary(s: StoredSession): ClaudeSessionSummary {
-  const { claudeSessionId: _ignored, ...rest } = s;
+  const { claudeSessionId: _ignored, turns: _turns, ...rest } = s;
   return rest;
 }
+
+/** Bash commands that run a test suite (for the "what changed" card). */
+const TEST_RE = /\b(npm|pnpm|yarn|bun)\s+(run\s+)?test\b|\bvitest\b|\bjest\b|\bpytest\b|\bphpunit\b|\bartisan\s+test\b|\bgo\s+test\b|\bcargo\s+test\b|\bmocha\b/;
 
 /**
  * One Claude Code conversation. Owns at most one `claude -p --input-format stream-json` process,
@@ -44,6 +49,14 @@ export class ClaudeSession {
   private idleTimer: NodeJS.Timeout | null = null;
   private respawnAfterTurn = false;
   busy = false;
+  /** The checkpoint of the turn in progress (ref is null when the project isn't a git repo). */
+  private turn: { n: number; ref: string | null } | null = null;
+  private testCalls = new Map<string, string>();
+  private lastTest: { command: string; passed: boolean } | null = null;
+  private summarizing: Promise<void> = Promise.resolve();
+  /** Told to Claude with the next message (e.g. after files were rewound). */
+  private pendingNote: string | null = null;
+  private isRepo: boolean | null = null;
 
   constructor(
     readonly s: StoredSession,
@@ -143,10 +156,17 @@ export class ClaudeSession {
       if (typeof event.model === 'string' && !this.s.model) this.s.model = event.model;
     }
     this.record(event);
+    this.watchTests(event);
     if (event.type === 'result') {
       this.busy = false;
       this.setState('idle');
       this.deps.onResult(this.s, event);
+      const turn = this.turn;
+      const tests = this.lastTest;
+      this.turn = null;
+      this.lastTest = null;
+      this.testCalls.clear();
+      if (turn?.ref) this.summarizing = this.summarize(turn.n, turn.ref, tests).catch((err) => log.warn({ err }, 'turn summary failed'));
       if (this.respawnAfterTurn) {
         this.respawnAfterTurn = false;
         this.stopProcess();
@@ -170,12 +190,91 @@ export class ClaudeSession {
     setTimeout(() => p.exitCode === null && p.kill('SIGTERM'), 5000).unref();
   }
 
+  /** Remembers test commands Claude runs and whether they passed. */
+  private watchTests(event: ClaudeStreamEvent): void {
+    const blocks = (event as { message?: { content?: unknown } }).message?.content;
+    if (!Array.isArray(blocks)) return;
+    for (const b of blocks as { type?: string; id?: string; name?: string; input?: { command?: unknown }; tool_use_id?: string; is_error?: boolean }[]) {
+      if (event.type === 'assistant' && b.type === 'tool_use' && b.name === 'Bash' && b.id && typeof b.input?.command === 'string' && TEST_RE.test(b.input.command)) {
+        this.testCalls.set(b.id, b.input.command);
+      } else if (event.type === 'user' && b.type === 'tool_result' && b.tool_use_id && this.testCalls.has(b.tool_use_id)) {
+        this.lastTest = { command: this.testCalls.get(b.tool_use_id)!, passed: !b.is_error };
+      }
+    }
+  }
+
+  /** Snapshot of the files before a turn (git repos only). Never fails the turn. */
+  private async checkpoint(n: number): Promise<string | null> {
+    try {
+      this.isRepo ??= await isGitRepo(this.s.projectPath);
+      if (!this.isRepo) return null;
+      const ref = `${CP_PREFIX}${this.id}/${n}`;
+      await saveRef(this.s.projectPath, ref, await snapshot(this.s.projectPath));
+      return ref;
+    } catch (err) {
+      log.warn({ err, sessionId: this.id }, 'checkpoint failed');
+      return null;
+    }
+  }
+
+  /** After a turn: which files changed since its checkpoint, and whether tests passed. */
+  private async summarize(n: number, ref: string, tests: { command: string; passed: boolean } | null): Promise<void> {
+    const dir = this.s.projectPath;
+    const before = await resolveRef(dir, ref);
+    if (!before) return;
+    const after = await snapshot(dir);
+    const afterRef = `${ref}-after`;
+    await saveRef(dir, afterRef, after);
+    const files = await changes(dir, before, after);
+    this.record({
+      type: 'nicode',
+      subtype: 'turn_summary',
+      turn: n,
+      from: ref,
+      to: afterRef,
+      files: files.slice(0, 200),
+      totalFiles: files.length,
+      add: files.reduce((a, f) => a + f.add, 0),
+      del: files.reduce((a, f) => a + f.del, 0),
+      ...(tests ? { tests } : {}),
+    });
+    void prune(dir).catch(() => undefined);
+  }
+
+  /** Rewinds the project files to a checkpoint (a turn's "before", or an undo point). */
+  async rewind(target: { turn: number } | { ref: string }): Promise<{ changed: number; undoRef: string }> {
+    if (this.busy) throw new RpcError('busy', 'Stop Claude first, then rewind');
+    await this.summarizing;
+    const ref = 'turn' in target ? `${CP_PREFIX}${this.id}/${target.turn}` : target.ref;
+    if (!ref.startsWith(`${CP_PREFIX}${this.id}/`)) throw new RpcError('forbidden', 'That checkpoint belongs to another chat');
+    const sha = await resolveRef(this.s.projectPath, ref);
+    if (!sha) throw new RpcError('not_found', 'That checkpoint no longer exists');
+    const { changed, before } = await restoreFiles(this.s.projectPath, sha);
+    const undoRef = `${CP_PREFIX}${this.id}/undo-${Date.now()}`;
+    await saveRef(this.s.projectPath, undoRef, before);
+    const what = 'turn' in target ? `how they were before message #${target.turn + 1} of this chat` : 'how they were before the last rewind';
+    this.record({ type: 'nicode', subtype: 'rewind', ...('turn' in target ? { turn: target.turn } : { ref }), undoRef, changed });
+    this.pendingNote = `[niCode note: the user rewound the project files to ${what}. Files may differ from what you saw earlier; re-read them before editing.]`;
+    return { changed, undoRef };
+  }
+
   async send(text: string, images: ImageInput[] = []): Promise<void> {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.busy = true;
     this.stderrTail = '';
     this.setState('running');
-    this.record({ type: 'nicode', subtype: 'user_turn', text, ...(images.length ? { imageCount: images.length } : {}) });
+    await this.summarizing;
+    if (this.s.turns === undefined) {
+      const past = await this.deps.store.history(this.id).catch(() => []);
+      this.s.turns = past.filter((e) => e.event.type === 'nicode' && e.event.subtype === 'user_turn').length;
+    }
+    const n = this.s.turns++;
+    this.deps.store.upsert(this.s);
+    const ref = await this.checkpoint(n);
+    this.turn = { n, ref };
+    this.record({ type: 'nicode', subtype: 'user_turn', text, turn: n, checkpoint: ref, ...(images.length ? { imageCount: images.length } : {}) });
+    const note = this.pendingNote;
+    this.pendingNote = null;
     try {
       if (!this.proc || this.proc.exitCode !== null) this.proc = await this.spawnProcess();
     } catch (err) {
@@ -187,7 +286,9 @@ export class ClaudeSession {
       type: 'user',
       message: {
         role: 'user',
-        content: [...images.map((i) => ({ type: 'image', source: { type: 'base64', media_type: i.mediaType, data: i.data } })), { type: 'text', text }],
+        content: [...images.map((i) => ({ type: 'image', source: { type: 'base64', media_type: i.mediaType, data: i.data } })), { type: 'text', text: note ? `${note}
+
+${text}` : text }],
       },
       parent_tool_use_id: null,
       session_id: this.s.claudeSessionId ?? this.id,

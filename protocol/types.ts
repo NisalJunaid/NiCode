@@ -205,6 +205,31 @@ export interface TermInfo {
 // Methods: name → [params, result]
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** One file a Claude turn changed (paths relative to the project). */
+export interface TurnFileChange {
+  path: string;
+  status: 'A' | 'M' | 'D' | 'R';
+  add: number;
+  del: number;
+  binary: boolean;
+}
+
+/**
+ * `nicode` marker `turn_summary`, recorded after each turn in a git project:
+ * what changed since the checkpoint taken before the turn, and the last test run.
+ */
+export interface TurnSummary {
+  turn: number;
+  /** Checkpoint refs before / after the turn (for diffs and rewinds). */
+  from: string;
+  to: string;
+  files: TurnFileChange[];
+  totalFiles: number;
+  add: number;
+  del: number;
+  tests?: { command: string; passed: boolean };
+}
+
 /** An image attached to a chat message (max 4 per message, ≤ 5 MB each). Only `imageCount` is kept in history. */
 export interface ImageInput {
   mediaType: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
@@ -246,7 +271,8 @@ export interface Methods {
 
   // Git
   'git.status': [{ projectPath: string }, GitStatus];
-  'git.diff': [{ projectPath: string; path?: string; staged?: boolean }, { diff: string }];
+  /** `base`/`head`: checkpoint refs (refs/nicode/cp/…) to diff one turn's changes; `commit`: one commit's diff. */
+  'git.diff': [{ projectPath: string; path?: string; staged?: boolean; base?: string; head?: string; commit?: string }, { diff: string }];
   'git.stage': [{ projectPath: string; paths: string[] }, { ok: true }];
   'git.unstage': [{ projectPath: string; paths: string[] }, { ok: true }];
   'git.discard': [{ projectPath: string; paths: string[] }, { ok: true }];
@@ -268,6 +294,8 @@ export interface Methods {
   // Claude Code sessions
   'claude.start': [{ projectPath: string; prompt: string; model?: string; permissionMode?: PermissionMode; images?: ImageInput[] }, ClaudeSessionSummary];
   'claude.send': [{ sessionId: string; text: string; images?: ImageInput[] }, { ok: true }];
+  /** Rewind the project files to before a turn (`turn`) or back to an undo point (`ref` from a rewind). */
+  'claude.rewind': [{ sessionId: string; turn?: number; ref?: string }, { changed: number; undoRef: string }];
   'claude.interrupt': [{ sessionId: string }, { ok: true }];
   'claude.setMode': [{ sessionId: string; permissionMode?: PermissionMode; model?: string }, ClaudeSessionSummary];
   'claude.list': [{ projectPath?: string }, ClaudeSessionSummary[]];

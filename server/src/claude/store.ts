@@ -9,6 +9,8 @@ import { writeFileAtomic } from '../config.js';
 export interface StoredSession extends ClaudeSessionSummary {
   /** Claude's own session id (from the init event); used for --resume. */
   claudeSessionId: string | null;
+  /** User turns so far (checkpoint numbering). Missing on sessions from before checkpoints. */
+  turns?: number;
 }
 
 /**

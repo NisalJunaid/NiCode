@@ -1,4 +1,6 @@
-import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
+import { DarkTheme, DefaultTheme, router, Stack, ThemeProvider } from 'expo-router';
+import { ShareIntentProvider, useShareIntentContext } from 'expo-share-intent';
+import { useEffect } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
@@ -11,7 +13,24 @@ applyAppearance();
 
 export { ErrorScreen as ErrorBoundary } from '@/components/ErrorScreen';
 
+/** Opens the "Share to niCode" screen when another app shares text, a link or images. */
+function ShareRouter() {
+  const { hasShareIntent } = useShareIntentContext();
+  useEffect(() => {
+    if (hasShareIntent) router.push('/share');
+  }, [hasShareIntent]);
+  return null;
+}
+
 export default function RootLayout() {
+  return (
+    <ShareIntentProvider>
+      <RootStack />
+    </ShareIntentProvider>
+  );
+}
+
+function RootStack() {
   const c = useColors();
   const dark = useIsDark();
   useNotificationRouting();
@@ -39,6 +58,7 @@ export default function RootLayout() {
             <Stack.Screen name="pair/manual" options={{ title: 'Enter pairing code' }} />
             <Stack.Screen name="pair/confirm" options={{ title: 'Pair this phone' }} />
             <Stack.Screen name="settings" options={{ title: 'App settings' }} />
+            <Stack.Screen name="share" options={{ title: 'Share to niCode', presentation: 'modal' }} />
             <Stack.Screen name="host/[hostId]/index" options={{ title: '' }} />
             <Stack.Screen name="host/[hostId]/server" options={{ title: 'Server' }} />
             <Stack.Screen name="host/[hostId]/claude-login" options={{ title: 'Log in to Claude' }} />
@@ -61,6 +81,7 @@ export default function RootLayout() {
           </Stack>
         </ThemeProvider>
         </KeyboardProvider>
+        <ShareRouter />
         <AnimatedSplash />
       </SafeAreaProvider>
     </GestureHandlerRootView>
