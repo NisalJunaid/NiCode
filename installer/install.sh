@@ -32,6 +32,10 @@ Options
   --stage base|full      base = tools only; full = + niCode daemon (default: full)
   --transport T          https | tailscale | local   (default: auto-detected)
   --domain NAME          Use your own domain instead of <ip>.sslip.io (A record must point here)
+  --role R               development | production (default: kept from the existing config, else
+                         development). production: Claude may only analyze (read-only), and
+                         migrations / discarding changes need a fingerprint in the app
+  --sandbox-setup        Only (re)install the read-only Analyze sandbox (bubblewrap) and restart the daemon
   --device-key ALG:B64   The app's PUBLIC key (RS256|ES256|Ed25519) to pre-pair a phone; no secret involved.
                          Without it, a one-time pairing QR is shown at the end (or run: nicode pair)
   --setup-id ID          Id that guards /setup/status (else generated)
@@ -69,6 +73,8 @@ while (($#)); do
     --stage)         NI_ARGS[NICODE_STAGE]="$2"; shift ;;
     --transport)     NI_ARGS[NICODE_TRANSPORT]="$2"; shift ;;
     --domain)        NI_ARGS[NICODE_DOMAIN]="$2"; shift ;;
+    --role)          NI_ARGS[NICODE_ROLE]="$2"; shift ;;
+    --sandbox-setup) NI_SANDBOX_ONLY=1 ;;
     --device-key)    NI_ARGS[NICODE_DEVICE_PUBKEY]="$2"; shift ;;
     --token)         echo "--token was removed: phones pair with a one-time code (nicode pair) or --device-key" >&2; exit 2 ;;
     --setup-id)      NI_ARGS[NICODE_SETUP_ID]="$2"; shift ;;
@@ -153,6 +159,16 @@ install_cli() {
 }
 
 # ── Run ──────────────────────────────────────────────────────────────────────
+if [[ -n "${NI_SANDBOX_ONLY:-}" && -z "${NI_DRY_RUN:-}" ]]; then
+  # `nicode sandbox`: uses the user detected by the last full run.
+  # shellcheck disable=SC1090
+  [[ -r "$NI_PROFILE_FILE" ]] && source "$NI_PROFILE_FILE"
+  [[ -n "${NI_USER:-}" ]] || { echo "niCode isn't installed here yet; run the installer first." >&2; exit 1; }
+  ensure_analyze_sandbox
+  if [[ -f /etc/systemd/system/nicode.service ]]; then systemctl restart nicode && echo "Daemon restarted."; fi
+  exit 0
+fi
+
 state_init            # creates /var/lib/nicode before anything writes there
 : >"$NI_PROFILE_FILE"
 [[ -z "${NI_DRY_RUN:-}" ]] && install_cli

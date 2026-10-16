@@ -34,10 +34,15 @@ step_daemon() {
   #    so no secret ever goes through cloud-init. Otherwise pair with `nicode pair` (shown at the end).
   cfg_dir="$NI_USER_HOME/.config/nicode"
   cfg="$cfg_dir/config.json"
-  local devices='[]' codes='[]'
+  local devices='[]' codes='[]' role='development'
   if [[ -f "$cfg" ]]; then
     devices="$(jq -c '(.devices // .tokens // []) | map(select(.publicKey != null or .expiresAt != null))' "$cfg")"
     codes="$(jq -c '.pairingCodes // []' "$cfg")"
+    role="$(jq -r '.role // "development"' "$cfg")" # set from the app or `nicode role`; kept on updates
+  fi
+  # --role production|development overrides (and is remembered for later runs).
+  if [[ -n "${NICODE_ROLE:-}" ]]; then
+    case "$NICODE_ROLE" in production|development) role="$NICODE_ROLE" ;; *) step_detail "--role must be production or development"; return 1 ;; esac
   fi
   if [[ -n "${NICODE_DEVICE_PUBKEY:-}" ]]; then
     local alg="${NICODE_DEVICE_PUBKEY%%:*}" pub="${NICODE_DEVICE_PUBKEY#*:}"
@@ -54,8 +59,12 @@ step_daemon() {
     tailscale) bind="$NI_PUBLIC_HOST" ;;
     local)     bind=0.0.0.0 ;;
   esac
-  tmpl_daemon_config "$bind" "$devices" "$src" "$codes" >"$cfg.tmp"
+  tmpl_daemon_config "$bind" "$devices" "$src" "$codes" "$role" >"$cfg.tmp"
   chown "$NI_USER:" "$cfg.tmp"; chmod 600 "$cfg.tmp"; mv -f "$cfg.tmp" "$cfg"
+
+  # 3b. The read-only sandbox for Analyze chats (bubblewrap); probed by the daemon at startup.
+  local sandbox
+  sandbox="$(ensure_analyze_sandbox)"
 
   # 4. Service.
   if [[ "$NI_HAS_SYSTEMD" != 1 ]]; then
@@ -75,5 +84,5 @@ step_daemon() {
   done
   (( ok )) || { step_detail "daemon did not answer /health — journalctl -u nicode"; return 1; }
   profile_set NI_DAEMON_INSTALLED 1
-  step_detail "running on ${bind}:${NI_PORT}"
+  step_detail "running on ${bind}:${NI_PORT} ($role); $sandbox"
 }

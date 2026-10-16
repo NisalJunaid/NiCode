@@ -33,7 +33,7 @@ export function useConnection(hostId: string): { client: NicodeClient | null; st
   const client = useClient(hostId);
   const snapshot = useSyncExternalStore(
     (cb) => client?.subscribeState(cb) ?? (() => undefined),
-    () => `${client?.state}|${client?.lastError}|${client?.info?.setup.claude}|${client?.info?.setup.github}`,
+    () => `${client?.state}|${client?.lastError}|${client?.info?.setup.claude}|${client?.info?.setup.github}|${client?.info?.role}|${client?.info?.analyzeIsolation}|${client?.info?.analyzeBlocked}`,
   );
   void snapshot;
   return { client, state: client?.state ?? 'idle', info: client?.info ?? null, error: client?.lastError ?? null };

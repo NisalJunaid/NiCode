@@ -133,7 +133,7 @@ export default function Sites() {
                   <Badge text={item.enabled ? 'Online' : 'Disabled'} tone={item.enabled ? 'success' : 'default'} />
                   <Badge text={cert.text} tone={cert.tone} />
                   {item.domains.length > 1 ? <Badge text={`+${item.domains.length - 1} more`} /> : null}
-                  {item.protected ? <Badge text="niCode" tone="accent" /> : null}
+                  {item.managedBy === 'panel' ? <Badge text="Managed in Panel" tone="accent" /> : item.protected ? <Badge text="niCode" tone="accent" /> : null}
                 </View>
               </Pressable>
             );

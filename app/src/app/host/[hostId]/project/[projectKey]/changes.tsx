@@ -6,6 +6,8 @@ import { TabKeyboardAvoidingView } from '@/components/TabKeyboardAvoidingView';
 import type { GitFileStatus, GitStatus } from '@protocol';
 import { ConnectionBar } from '@/components/ConnectionBar';
 import { Badge, Button, EmptyState, Icon, Loading, T } from '@/components/ui';
+import { RpcCallError } from '@/lib/client';
+import { confirmAction } from '@/lib/confirm';
 import { useProject } from '@/lib/project';
 import { useConnection, useOnConnected } from '@/lib/connections';
 import { errorMessage } from '@/lib/util';
@@ -23,7 +25,8 @@ const LABEL: Record<string, { text: string; tone: 'success' | 'warning' | 'dange
 export default function Changes() {
   const c = useColors();
   const { hostId, projectPath } = useProject();
-  const { client, state, error } = useConnection(hostId);
+  const { client, state, error, info } = useConnection(hostId);
+  const production = info?.role === 'production';
   const [status, setStatus] = useState<GitStatus | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [message, setMessage] = useState('');
@@ -56,6 +59,33 @@ export default function Changes() {
     } catch (err) {
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       Alert.alert(`${label} failed`, errorMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /** Pulls never run over local changes: offer to stash (kept) or discard them (fingerprint on production). */
+  const pull = async (onDirty?: 'stash' | 'discard') => {
+    if (!client) return;
+    setBusy('Pull');
+    try {
+      const proof = onDirty === 'discard' && production ? await confirmAction(client, 'git.pull', [projectPath, 'discard'], 'Confirm discarding changes on production') : undefined;
+      const r = await client.call('git.pull', { projectPath, ...(onDirty ? { onDirty } : {}), ...(proof ? { proof } : {}) }, 300_000);
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      if (r.stash) Alert.alert('Pulled', `Your local changes were stashed as "${r.stash}". Restore them with git stash pop.`);
+      await load();
+    } catch (err) {
+      if (err instanceof RpcCallError && err.code === 'dirty') {
+        const dirty = ((err.data as { dirty?: string[] } | undefined)?.dirty ?? []).slice(0, 8).join('\n');
+        Alert.alert('Uncommitted changes', `${err.message}\n\n${dirty}`, [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Stash & pull', onPress: () => void pull('stash') },
+          { text: 'Discard & pull', style: 'destructive', onPress: () => void pull('discard') },
+        ]);
+      } else {
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        Alert.alert('Pull failed', errorMessage(err));
+      }
     } finally {
       setBusy(null);
     }
@@ -121,7 +151,7 @@ export default function Changes() {
             icon="time-outline"
             onPress={() => router.push({ pathname: '/host/[hostId]/history', params: { hostId, project: projectPath } })}
           />
-          <Button small kind="secondary" title="Pull" icon="arrow-down" loading={busy === 'Pull'} onPress={() => act('Pull', () => client!.call('git.pull', { projectPath }, 150_000))} />
+          <Button small kind="secondary" title="Pull" icon="arrow-down" loading={busy === 'Pull'} onPress={() => void pull()} />
           <Button small kind={status.ahead ? 'primary' : 'secondary'} title="Push" icon="arrow-up" loading={busy === 'Push'} onPress={() => act('Push', () => client!.call('git.push', { projectPath }, 150_000), 'Pushed')} />
         </View>
 

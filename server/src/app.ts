@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import type { PermissionMode } from '../../protocol/types.js';
 import { type Config, readEnvFile } from './config.js';
 import { log } from './log.js';
+import { sandboxSupport } from './claude/sandbox.js';
 import { RpcError } from './rpc.js';
 import { StatusFile } from './status.js';
 import { run } from './util/exec.js';
@@ -15,12 +16,14 @@ export interface ClaudeCaps {
   permissionModes: string[]; // the CLI's own names
   sessionIdFlag: boolean;
   permissionPromptsFlag: boolean;
+  disallowedToolsFlag: boolean;
+  appendSystemPromptFlag: boolean;
 }
 
 class AppState {
   config!: Config;
   status!: StatusFile;
-  caps: ClaudeCaps = { version: null, permissionModes: [], sessionIdFlag: false, permissionPromptsFlag: false };
+  caps: ClaudeCaps = { version: null, permissionModes: [], sessionIdFlag: false, permissionPromptsFlag: false, disallowedToolsFlag: false, appendSystemPromptFlag: false };
   readonly home = os.homedir();
   readonly isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
   readonly daemonVersion: string = readDaemonVersion();
@@ -55,6 +58,8 @@ class AppState {
         permissionModes: [...modes.matchAll(/"([^"]+)"/g)].map((m) => m[1]!),
         sessionIdFlag: help.includes('--session-id'),
         permissionPromptsFlag: help.includes('--permission-prompts'),
+        disallowedToolsFlag: /--disallowed-?[tT]ools/.test(help),
+        appendSystemPromptFlag: help.includes('--append-system-prompt'),
       };
       log.info({ caps: this.caps }, 'claude CLI detected');
     } catch (err) {
@@ -62,26 +67,50 @@ class AppState {
     }
   }
 
-  /** Modes the app may offer, in protocol terms. */
+  get production(): boolean {
+    return this.config.role === 'production';
+  }
+
+  analyzeIsolation(): 'kernel' | 'soft' {
+    return sandboxSupport().available ? 'kernel' : 'soft';
+  }
+
+  /**
+   * Why Analyze can't run here (null when it can). Production servers accept only the kernel
+   * sandbox, and never as root (root could reach around it).
+   */
+  analyzeBlocked(): string | null {
+    if (!this.production || process.env.NICODE_TEST_SOFT_ANALYZE === '1') return null;
+    if (this.isRoot) return 'niCode runs as root here, so Analyze cannot be made read-only. Reinstall niCode for a normal user.';
+    const sb = sandboxSupport();
+    return sb.available ? null : `Analyze needs the read-only sandbox on production servers. ${sb.reason ?? ''}`.trim();
+  }
+
+  /** Modes the app may offer, in protocol terms. Production servers: Analyze only. */
   permissionModes(): PermissionMode[] {
+    if (this.production) return ['analyze'];
     const cli = this.caps.permissionModes;
     const out: PermissionMode[] = ['default'];
     for (const m of ['acceptEdits', 'plan', 'auto'] as const) if (cli.length === 0 || cli.includes(m)) out.push(m);
     // Claude Code refuses to bypass permissions as root.
     if (!this.isRoot && (cli.length === 0 || cli.includes('bypassPermissions'))) out.push('bypassPermissions');
+    out.push('analyze');
     return out;
   }
 
-  /** Protocol mode → the installed CLI's name for it. */
+  /** Protocol mode → the installed CLI's name for it ('analyze' runs as the CLI's ask-first mode). */
   cliPermissionMode(mode: PermissionMode): string {
     if (!this.permissionModes().includes(mode)) {
-      throw new RpcError('bad_request', `Permission mode "${mode}" is not available on this server`);
+      throw new RpcError(
+        'bad_request',
+        this.production ? 'This is a production server: Claude can only analyze here (read-only).' : `Permission mode "${mode}" is not available on this server`,
+      );
     }
     const cli = this.caps.permissionModes;
-    if (mode === 'default' && cli.length > 0 && !cli.includes('default')) {
+    if ((mode === 'default' || mode === 'analyze') && cli.length > 0 && !cli.includes('default')) {
       return cli.includes('manual') ? 'manual' : 'default';
     }
-    return mode;
+    return mode === 'analyze' ? 'default' : mode;
   }
 }
 

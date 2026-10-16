@@ -5,6 +5,8 @@
 import type { SiteKind } from '../../../protocol/types.js';
 
 export const MANAGED_MARKER = '# managed-by: niCode';
+/** Sites written by a hosting panel on the same server (e.g. Host Panel). niCode only reads them. */
+const PANEL_MARKER_RE = /^# managed-by: hostpanel\b(?:.*?\bsite=([a-z0-9][a-z0-9-]{0,62}))?/m;
 const DOMAIN_RE = /^(?=.{1,253}$)(?!-)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 
 export function normalizeDomain(input: string): string {
@@ -98,6 +100,8 @@ export function renderSite(o: RenderOptions): string {
 
 export interface ParsedSite {
   managed: boolean;
+  /** Owned by a hosting panel (`# managed-by: hostpanel [site=<slug>]`); `site` is null for the panel's own vhost. */
+  panel: { site: string | null } | null;
   domains: string[];
   root: string | null;
   proxyPort: number | null;
@@ -109,6 +113,8 @@ export interface ParsedSite {
 /** Reads the parts of an nginx site that matter for the app. Tolerant of any formatting. */
 export function parseSite(text: string): ParsedSite {
   const managed = text.includes(MANAGED_MARKER);
+  const panelMark = PANEL_MARKER_RE.exec(text);
+  const panel = panelMark ? { site: panelMark[1] ?? null } : null;
   const markedKind = /^# nicode-kind:\s*(static|spa|php|proxy)\s*$/m.exec(text)?.[1] as SiteKind | undefined;
   const body = text
     .split('\n')
@@ -131,7 +137,7 @@ export function parseSite(text: string): ParsedSite {
     else if (/try_files[^;]*\/index\.html\s*;/.test(body)) kind = 'spa';
     else if (root) kind = 'static';
   }
-  return { managed, domains: [...domains], root, proxyPort: port ? Number(port) : null, https, sslCertificate, kind };
+  return { managed, panel, domains: [...domains], root, proxyPort: port ? Number(port) : null, https, sslCertificate, kind };
 }
 
 /** Config file name for a new site: "<domain>.conf". */

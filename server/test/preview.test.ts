@@ -17,20 +17,23 @@ describe('preview sign-in', () => {
   beforeAll(async () => initPreviewKey(await mkdtemp(path.join(os.tmpdir(), 'nicode-pk-'))));
 
   it('one-time links are single use, port-bound and expire', () => {
-    const t = issueOpenToken(3000);
-    expect(redeemOpenToken(t, 3001)).toBe(false);
-    expect(redeemOpenToken(t, 3000)).toBe(true);
-    expect(redeemOpenToken(t, 3000)).toBe(false); // reused
-    expect(redeemOpenToken(issueOpenToken(3000, Date.now() - 10 * 60_000), 3000)).toBe(false); // expired
-    expect(redeemOpenToken(t.slice(0, -2) + 'xx', 3000)).toBe(false); // tampered
+    const t = issueOpenToken(3000, 'd_phone');
+    expect(redeemOpenToken(t, 3001)).toBeNull();
+    expect(redeemOpenToken(t, 3000)).toBe('d_phone');
+    expect(redeemOpenToken(t, 3000)).toBeNull(); // reused
+    expect(redeemOpenToken(issueOpenToken(3000, 'd_phone', Date.now() - 10 * 60_000), 3000)).toBeNull(); // expired
+    expect(redeemOpenToken(t.slice(0, -2) + 'xx', 3000)).toBeNull(); // tampered
   });
 
-  it('cookies only open their own preview host', () => {
-    const c = issueCookie(4000);
-    expect(cookieValid(c, 4000)).toBe(true);
-    expect(cookieValid(c, 4001)).toBe(false);
-    expect(cookieValid(issueCookie(4000, Date.now() - 13 * 3600_000), 4000)).toBe(false);
-    expect(cookieValid(undefined, 4000)).toBe(false);
+  it('cookies only open their own preview host, and only while their device is paired', () => {
+    const paired = (id: string) => id === 'd_phone';
+    const c = issueCookie(4000, 'd_phone');
+    expect(cookieValid(c, 4000, paired)).toBe(true);
+    expect(cookieValid(c, 4001, paired)).toBe(false);
+    expect(cookieValid(c, 4000, () => false)).toBe(false); // the phone was revoked
+    expect(cookieValid(issueCookie(4000, 'd_lost'), 4000, paired)).toBe(false);
+    expect(cookieValid(issueCookie(4000, 'd_phone', Date.now() - 13 * 3600_000), 4000, paired)).toBe(false);
+    expect(cookieValid(undefined, 4000, paired)).toBe(false);
   });
 
   it('parses preview hosts and cookies', () => {

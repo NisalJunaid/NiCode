@@ -22,7 +22,8 @@ interface FileData {
 export default function FileScreen() {
   const c = useColors();
   const { hostId, project, path, line } = useLocalSearchParams<{ hostId: string; project: string; path: string; line?: string }>();
-  const { client } = useConnection(hostId);
+  const { client, info } = useConnection(hostId);
+  const production = info?.role === 'production';
   const [file, setFile] = useState<FileData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
@@ -72,7 +73,19 @@ export default function FileScreen() {
             editing ? (
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                 <IconButton icon="close" label="Cancel editing" onPress={() => setEditing(false)} />
-                <Button small title="Save" loading={saving} onPress={() => save()} />
+                <Button
+                  small
+                  title="Save"
+                  loading={saving}
+                  onPress={() =>
+                    production
+                      ? Alert.alert('Save on the production server?', 'This creates an uncommitted change on production, and the next pull will stop until it is stashed or discarded. Usually fixes go through your dev server and git.', [
+                          { text: 'Cancel', style: 'cancel' },
+                          { text: 'Save anyway', style: 'destructive', onPress: () => void save() },
+                        ])
+                      : void save()
+                  }
+                />
               </View>
             ) : (
               <View style={{ flexDirection: 'row' }}>

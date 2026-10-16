@@ -93,7 +93,10 @@ export default function ShareScreen() {
         sessionId = latest.sessionId;
       } else {
         const s = useSettings.getState();
-        const r = await client.call('claude.start', { projectPath: project, prompt: message, permissionMode: s.defaultMode, ...(s.defaultModel ? { model: s.defaultModel } : {}), ...imgs }, 120_000);
+        // Production servers offer only Analyze; use the server's first mode when the default isn't offered.
+        const modes = client.info?.permissionModes;
+        const permissionMode = modes && !modes.includes(s.defaultMode) ? modes[0] : s.defaultMode;
+        const r = await client.call('claude.start', { projectPath: project, prompt: message, permissionMode, ...(s.defaultModel ? { model: s.defaultModel } : {}), ...imgs }, 120_000);
         sessionId = r.sessionId;
         rememberSent(sessionId, 0, images.map((a) => a.uri));
       }

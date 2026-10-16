@@ -89,7 +89,7 @@ server {
 EOF
 }
 
-# tmpl_daemon_config <bindHost> <devices json> <source dir> <pairing codes json>
+# tmpl_daemon_config <bindHost> <devices json> <source dir> <pairing codes json> <role>
 tmpl_daemon_config() {
   local h="$NI_USER_HOME"
   cat <<EOF
@@ -107,7 +107,8 @@ tmpl_daemon_config() {
   "envFile": "$(json_escape "$h/.config/nicode/env")",
   "statusFile": "$(json_escape "$NI_STATUS_FILE")",
   "claudeBin": "$(json_escape "${NI_CLAUDE_BIN:-claude}")",
-  "appDir": "$(json_escape "$3")"
+  "appDir": "$(json_escape "$3")",
+  "role": "$(json_escape "${5:-development}")"
 }
 EOF
 }

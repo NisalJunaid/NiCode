@@ -43,6 +43,21 @@
   - Per project: running apps with Restart / Stop / Logs, "Run as an app", and quick tasks (pull, install, build, scripts, artisan) with live output.
   - App setup: npm script or command, port, environment variables, install & build first; then "Add a domain" pre-filled with the port.
   - App details: status, one-tap deploy (pull → install → build → reload), live logs. A one-time "Set up pm2" banner turns on start-on-boot.
+- **Production servers** (v0.9):
+  - The server list groups Production and Development, with a red PROD badge; projects on production show PRODUCTION in their header.
+  - Server settings → **Production & safety**: the production switch (turning it off needs a fingerprint), the Analyze sandbox state (kernel / soft, with the fix), and a warning when niCode runs as root.
+  - On production, the mode sheet offers only Analyze, "Always allow" isn't offered, and saving a file asks first (it would leave a local change that blocks the next pull).
+- **Analyze chats**: the "Analyze" mode (magnifier).
+  - A bar above the chat shows read-only status, the isolation, and the project's read-only database; it opens **Analyze: database**. That screen suggests SQL for a SELECT-only user from the project's .env, offers copy, then **Test & save**; the password never comes back.
+  - Read-only starter prompts (latest errors, slow pages, data checks, health check).
+  - A red card appears if the repository changed during an analysis.
+  - Chats can't switch into or out of Analyze; start a new chat.
+- **Deploy** (Run tab; first on production):
+  - Status line: branch ← upstream, new commits, uncommitted changes, local commits.
+  - **Pull**, **Rebuild** (install + build), **Migrate** (shows the migration status first; fingerprint on production), **Restart** (pm2 reload, port check), **Start** (stopped apps, or "Run as an app").
+  - **Full deploy** opens a review: incoming commits, a switch per step, pending migrations.
+  - Pulls never run over local changes: stash & continue, or discard (fingerprint on production). The Changes tab's Pull does the same.
+  - Live steps and output; recent deploys with before→after commits.
 - **App settings**: "Ask every time" for biometrics, the default chat mode, and reset this phone's key.
 
 **Deviations from the plan below**

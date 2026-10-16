@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { TabKeyboardAvoidingView } from '@/components/TabKeyboardAvoidingView';
 import type { AccountUsage, ClaudeSessionSummary, PermissionMode } from '@protocol';
+import { AnalyzeBar } from '@/components/chat/AnalyzeBar';
 import { Composer } from '@/components/chat/Composer';
 import { Markdown } from '@/components/chat/Markdown';
 import { PermissionCard } from '@/components/chat/PermissionCard';
@@ -62,7 +63,10 @@ export default function ChatScreen() {
   const pending = useChat((s) => s.permissions[hostId]) ?? [];
   const myPending = pending.filter((p) => p.sessionId === sessionId);
   const summary = summaries?.find((s) => s.sessionId === sessionId);
-  const mode = summary?.permissionMode ?? draftMode;
+  const production = info?.role === 'production';
+  // A new chat uses the chosen mode if this server offers it (production servers: Analyze only).
+  const newChatMode = info && !info.permissionModes.includes(draftMode) ? (info.permissionModes[0] ?? draftMode) : draftMode;
+  const mode = summary?.permissionMode ?? newChatMode;
   const model = summary?.model && ['opus', 'sonnet', 'haiku'].includes(summary.model) ? summary.model : sessionId ? '' : draftModel;
   const running = data.state === 'running' || data.state === 'awaiting_permission';
   const items = useMemo(() => buildChatItems(data.events), [data.events]);
@@ -144,6 +148,8 @@ export default function ChatScreen() {
         </View>
       ) : null}
 
+      {mode === 'analyze' && !needsLogin ? <AnalyzeBar client={client} info={info} hostId={hostId} projectPath={projectPath} /> : null}
+
       {sessionId ? (
         !data.loaded && state === 'open' ? (
           <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
@@ -162,7 +168,7 @@ export default function ChatScreen() {
           />
         )
       ) : (
-        <NewChat summaries={summaries} onOpen={setSessionId} onSuggest={(t) => void send(t)} disabled={state !== 'open' || !!needsLogin} />
+        <NewChat summaries={summaries} onOpen={setSessionId} onSuggest={(t) => void send(t)} disabled={state !== 'open' || !!needsLogin} analyze={mode === 'analyze'} production={production} />
       )}
 
       {data.state === 'error' && data.error ? (
@@ -183,7 +189,8 @@ export default function ChatScreen() {
         mode={mode}
         model={model}
         modes={info?.permissionModes ?? ['default', 'acceptEdits', 'plan']}
-        placeholder={sessionId ? undefined : 'What should Claude do in this project?'}
+        analyzeChat={sessionId && summary ? summary.permissionMode === 'analyze' : undefined}
+        placeholder={sessionId ? undefined : mode === 'analyze' ? 'What should Claude look into? (read-only)' : 'What should Claude do in this project?'}
         draft={draft && draftId ? { id: draftId, text: draft } : undefined}
         usage={usage.usage}
         onUsagePress={() => router.push({ pathname: '/host/[hostId]/claude-accounts', params: { hostId } })}
@@ -295,6 +302,25 @@ function ChatRow({ item, ctx, pending }: { item: ChatItem; ctx: RowCtx; pending:
           {!item.ok && item.text && LIMIT_RE.test(item.text) ? <SwitchAccountButton /> : null}
         </View>
       );
+    case 'repoChanged':
+      return (
+        <View style={{ backgroundColor: c.dangerSoft, borderRadius: radius.md, padding: space.sm, gap: 4 }}>
+          <View style={styles.meta}>
+            <Icon name="warning-outline" size={16} color={c.danger} />
+            <T size="sm" weight="700" style={{ flex: 1 }}>
+              The repository changed during this analysis
+            </T>
+          </View>
+          <T size="xs" tone="dim">
+            Analyze can&apos;t write, so something else did (a deploy, a terminal, another chat). Check it before pulling.
+          </T>
+          {item.changes.slice(0, 8).map((ch) => (
+            <T key={ch} size="xs" mono numberOfLines={1}>
+              {ch}
+            </T>
+          ))}
+        </View>
+      );
     case 'notice':
       return (
         <View style={styles.meta}>
@@ -356,8 +382,31 @@ const SUGGESTIONS = [
   { icon: 'checkmark-done-outline' as const, text: 'Review my changes', prompt: 'Review the uncommitted changes in this repo (git diff) like a careful code reviewer. Point out problems and suggest improvements.' },
 ];
 
-function NewChat({ summaries, onOpen, onSuggest, disabled }: { summaries: ClaudeSessionSummary[] | null; onOpen: (id: string) => void; onSuggest: (prompt: string) => void; disabled: boolean }) {
+/** Analyze (read-only) starters: troubleshooting on a live server. */
+const ANALYZE_SUGGESTIONS = [
+  { icon: 'alert-circle-outline' as const, text: 'Find the latest errors', prompt: 'Look at the most recent errors in the app and server logs. Group them, find the root cause of the most important ones in the code, and suggest fixes as diffs.' },
+  { icon: 'speedometer-outline' as const, text: 'Why is it slow?', prompt: 'Investigate performance: slow requests in the logs, heavy queries, missing indexes (read-only queries only) and expensive code paths. Report the biggest wins.' },
+  { icon: 'server-outline' as const, text: 'Check the data', prompt: 'Check the database for data problems the code would trip over (nulls, orphans, duplicates) with read-only, bounded queries. Report what you find.' },
+  { icon: 'pulse-outline' as const, text: 'Health check', prompt: 'Do a health check of this deployment: running processes, recent restarts, disk and memory, failed jobs, and anything in the logs that needs attention.' },
+];
+
+function NewChat({
+  summaries,
+  onOpen,
+  onSuggest,
+  disabled,
+  analyze,
+  production,
+}: {
+  summaries: ClaudeSessionSummary[] | null;
+  onOpen: (id: string) => void;
+  onSuggest: (prompt: string) => void;
+  disabled: boolean;
+  analyze: boolean;
+  production: boolean;
+}) {
   const c = useColors();
+  const suggestions = analyze ? ANALYZE_SUGGESTIONS : SUGGESTIONS;
   return (
     <FlatList
       data={summaries?.slice(0, 5) ?? []}
@@ -367,16 +416,18 @@ function NewChat({ summaries, onOpen, onSuggest, disabled }: { summaries: Claude
       ListHeaderComponent={
         <View style={{ gap: space.sm, paddingVertical: space.xl, alignItems: 'center' }}>
           <View style={{ width: 56, height: 56, borderRadius: 18, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' }}>
-            <Icon name="sparkles" size={26} color={c.accent} />
+            <Icon name={analyze ? 'search' : 'sparkles'} size={26} color={c.accent} />
           </View>
           <T size="lg" weight="700">
-            New chat with Claude
+            {analyze ? 'Analyze with Claude' : 'New chat with Claude'}
           </T>
           <T tone="dim" style={{ textAlign: 'center' }}>
-            Describe what you want: a fix, a feature, a question about the code. Claude works on the server and asks before anything risky.
+            {analyze
+              ? `Claude reads the code, logs and database to find what's wrong, then reports the cause and a fix. It can't change the project or its git repo${production ? ', so pulling updates on this production server stays clean' : ''}.`
+              : 'Describe what you want: a fix, a feature, a question about the code. Claude works on the server and asks before anything risky.'}
           </T>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, justifyContent: 'center', marginTop: space.md }}>
-            {SUGGESTIONS.map((s) => (
+            {suggestions.map((s) => (
               <Pressable
                 key={s.text}
                 accessibilityRole="button"
@@ -403,7 +454,7 @@ function NewChat({ summaries, onOpen, onSuggest, disabled }: { summaries: Claude
           onPress={() => onOpen(item.sessionId)}
           style={({ pressed }) => [styles.recent, { backgroundColor: pressed ? c.surfacePressed : c.surface, borderColor: c.border }]}
         >
-          <Icon name="chatbubble-ellipses-outline" size={18} color={c.textDim} />
+          <Icon name={item.permissionMode === 'analyze' ? 'search-outline' : 'chatbubble-ellipses-outline'} size={18} color={c.textDim} />
           <View style={{ flex: 1 }}>
             <T numberOfLines={1} weight="500">
               {item.title}

@@ -143,7 +143,10 @@ async function readSite(name: string, enabledNames: Set<string>): Promise<Site |
     name,
     enabled: enabledNames.has(name),
     managed: parsed.managed,
-    protected: isProtected(name, parsed.domains),
+    // A hosting panel owns its sites; editing them here would fight with it.
+    protected: isProtected(name, parsed.domains) || parsed.panel !== null,
+    managedBy: parsed.panel ? 'panel' : parsed.managed ? 'nicode' : null,
+    panelSite: parsed.panel?.site ?? null,
     domains: parsed.domains,
     kind: parsed.kind,
     root: parsed.root,

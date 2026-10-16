@@ -3,7 +3,8 @@
  *
  * The app gets a one-time link `/__nicode/auth?t=<token>` (HMAC, 2 minutes, single use) from
  * `preview.open` over its authenticated connection. Opening it sets an HttpOnly cookie
- * (HMAC, 12 hours) that is only valid for that one preview host. Without it, nothing is proxied.
+ * (HMAC, 12 hours) that is only valid for that one preview host and only while the device that
+ * opened it is still paired. Without it, nothing is proxied.
  */
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -53,28 +54,29 @@ function open(kind: 't' | 'c', value: string): Record<string, unknown> | null {
   }
 }
 
-export function issueOpenToken(port: number, now = Date.now()): string {
-  return seal('t', { p: port, e: now + TOKEN_TTL_MS, n: randomBytes(12).toString('base64url') });
+export function issueOpenToken(port: number, deviceId: string, now = Date.now()): string {
+  return seal('t', { p: port, d: deviceId, e: now + TOKEN_TTL_MS, n: randomBytes(12).toString('base64url') });
 }
 
-/** Valid, unexpired, for this port, and not used before (single use). */
-export function redeemOpenToken(token: string, port: number, now = Date.now()): boolean {
+/** Valid, unexpired, for this port, and not used before (single use). Returns the device it was issued to. */
+export function redeemOpenToken(token: string, port: number, now = Date.now()): string | null {
   const t = open('t', token);
-  if (!t || t.p !== port || typeof t.e !== 'number' || t.e < now || typeof t.n !== 'string') return false;
+  if (!t || t.p !== port || typeof t.e !== 'number' || t.e < now || typeof t.n !== 'string' || typeof t.d !== 'string') return null;
   for (const [n, exp] of usedNonces) if (exp < now) usedNonces.delete(n);
-  if (usedNonces.has(t.n)) return false;
+  if (usedNonces.has(t.n)) return null;
   usedNonces.set(t.n, t.e);
-  return true;
+  return t.d;
 }
 
-export function issueCookie(port: number, now = Date.now()): string {
-  return seal('c', { p: port, e: now + COOKIE_TTL_MS });
+export function issueCookie(port: number, deviceId: string, now = Date.now()): string {
+  return seal('c', { p: port, d: deviceId, e: now + COOKIE_TTL_MS });
 }
 
-export function cookieValid(value: string | undefined, port: number, now = Date.now()): boolean {
+/** Valid for this port, unexpired, and its device is still allowed (`deviceOk`), so revoking a phone ends its previews. */
+export function cookieValid(value: string | undefined, port: number, deviceOk: (deviceId: string) => boolean, now = Date.now()): boolean {
   if (!value) return false;
   const c = open('c', value);
-  return !!c && c.p === port && typeof c.e === 'number' && c.e > now;
+  return !!c && c.p === port && typeof c.e === 'number' && c.e > now && typeof c.d === 'string' && deviceOk(c.d);
 }
 
 /** `p3000.203-0-113-7.sslip.io` → 3000 (null for any other host). */

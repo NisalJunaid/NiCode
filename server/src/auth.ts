@@ -140,6 +140,27 @@ export function findPairingCode(codes: PairingCode[], presented: string, now = D
   return codes.find((c) => hexEqual(c.sha256, h) && Date.parse(c.expiresAt) > now) ?? null;
 }
 
+/** Fixed-window request limit per key (e.g. challenges per IP per minute). */
+export class RateLimit {
+  private hits = new Map<string, { n: number; resetAt: number }>();
+  constructor(
+    private readonly limit: number,
+    private readonly windowMs: number,
+  ) {}
+
+  /** Counts a request; false when the key is over its limit for the current window. */
+  take(key: string, now = Date.now()): boolean {
+    if (this.hits.size > 10_000) for (const [k, v] of this.hits) if (v.resetAt <= now) this.hits.delete(k);
+    const h = this.hits.get(key);
+    if (!h || h.resetAt <= now) {
+      this.hits.set(key, { n: 1, resetAt: now + this.windowMs });
+      return true;
+    }
+    h.n += 1;
+    return h.n <= this.limit;
+  }
+}
+
 /** Per-IP exponential backoff after repeated failures: 5 free tries, then 1s → 5min. */
 export class Backoff {
   private state = new Map<string, { fails: number; until: number }>();

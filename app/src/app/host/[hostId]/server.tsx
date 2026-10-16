@@ -1,10 +1,11 @@
 import * as Haptics from 'expo-haptics';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { Alert, View } from 'react-native';
-import type { DeviceInfo } from '@protocol';
+import { Alert, Switch, View } from 'react-native';
+import type { DeviceInfo, ServerRole } from '@protocol';
 import { ConnectionBar, connStatus } from '@/components/ConnectionBar';
 import { Badge, Divider, Row, Screen, Section, StatusDot, T } from '@/components/ui';
+import { confirmAction } from '@/lib/confirm';
 import { dropClient, useConnection, useOnConnected } from '@/lib/connections';
 import { errorMessage, relativeTime } from '@/lib/util';
 import { useHost, useHosts } from '@/state/hosts';
@@ -65,6 +66,40 @@ export default function ServerSettings() {
     ]);
   };
 
+  const [roleBusy, setRoleBusy] = useState(false);
+  const setRole = async (role: ServerRole) => {
+    if (!client) return;
+    const apply = async () => {
+      setRoleBusy(true);
+      try {
+        // Leaving production lifts the restrictions: a fresh fingerprint, like other destructive actions.
+        const proof = role === 'development' ? await confirmAction(client, 'server.setRole', ['development'], 'Turn off production mode') : undefined;
+        await client.call('server.setRole', { role, ...(proof ? { proof } : {}) });
+        await client.refreshInfo();
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      } catch (err) {
+        Alert.alert("Couldn't change the role", errorMessage(err));
+      } finally {
+        setRoleBusy(false);
+      }
+    };
+    if (role === 'production') {
+      Alert.alert(
+        'Make this a production server?',
+        'Claude will only analyze here (read-only), and every running chat becomes read-only. Migrations and discarding local changes will ask for your fingerprint.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Make production', onPress: () => void apply() },
+        ],
+      );
+    } else {
+      Alert.alert('Turn off production mode?', 'Claude will be able to change files and run commands on this server again.', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Turn off', style: 'destructive', onPress: () => void apply() },
+      ]);
+    }
+  };
+
   const forget = () =>
     Alert.alert('Remove this server from the app?', 'The server keeps working. To also revoke this phone\'s access, use "Unpair this phone" in the device list instead.', [
       { text: 'Cancel', style: 'cancel' },
@@ -98,6 +133,47 @@ export default function ServerSettings() {
             </>
           ) : null}
         </Section>
+
+        {info ? (
+          <Section
+            title="Production & safety"
+            footer="On a production server Claude can only analyze (read-only: code, logs, database), so the git repo stays clean for pulls. Migrations and discarding local changes ask for your fingerprint."
+          >
+            <Row
+              title="Production server"
+              icon="shield-checkmark-outline"
+              subtitle={info.role === 'production' ? 'Claude analyzes only' : 'All Claude modes'}
+              chevron={false}
+              right={<Switch value={info.role === 'production'} disabled={roleBusy} onValueChange={(v) => void setRole(v ? 'production' : 'development')} />}
+            />
+            <Divider />
+            <Row
+              title="Analyze sandbox"
+              icon={info.analyzeBlocked ? 'alert-circle-outline' : 'lock-closed-outline'}
+              subtitle={
+                info.analyzeBlocked
+                  ? info.analyzeBlocked
+                  : info.analyzeIsolation === 'kernel'
+                    ? 'Ready: Claude sees the whole server read-only in Analyze chats'
+                    : 'Not available (soft mode: tool blocking + approvals). Run `sudo nicode sandbox` on the server.'
+              }
+              right={<Badge text={info.analyzeIsolation === 'kernel' ? 'Kernel' : 'Soft'} tone={info.analyzeIsolation === 'kernel' ? 'success' : info.analyzeBlocked ? 'danger' : 'warning'} />}
+              chevron={false}
+            />
+            {info.isRoot ? (
+              <>
+                <Divider />
+                <Row
+                  title="niCode runs as root"
+                  icon="warning-outline"
+                  danger
+                  subtitle="Anything this phone runs, runs as root. Reinstall with --no-root for a separate user."
+                  chevron={false}
+                />
+              </>
+            ) : null}
+          </Section>
+        ) : null}
 
         <Section title="Accounts on the server" footer="These logins live on the server; your phone never stores them.">
           <Row

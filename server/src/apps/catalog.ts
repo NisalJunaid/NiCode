@@ -1,5 +1,5 @@
 /**
- * What can be run in a project: one-tap tasks (install, build, scripts, artisan, git pull) and
+ * What can be run in a project: one-tap tasks (install, build, scripts, artisan, migrations, git pull) and
  * how to start it as a long-running app. Pure apart from reading project files.
  * Tasks are fixed argument lists — never shell strings — and run only by id.
  */
@@ -75,18 +75,86 @@ export function listTasks(dir: string): TaskSpec[] {
     for (const n of names) {
       // Long-running dev servers belong in Apps, not one-off tasks.
       if (/^(dev|watch|serve|start|preview)$/.test(n) || /:(dev|watch)$/.test(n)) continue;
-      tasks.push(task(`script:${n}`, n === 'build' ? 'Build' : n, n === 'build' ? 'build' : 'script', pm, ['run', n]));
+      const group = n === 'build' ? 'build' : MIGRATE_SCRIPTS.has(n) ? 'migrate' : 'script';
+      tasks.push(task(`script:${n}`, n === 'build' ? 'Build' : n, group, pm, ['run', n]));
     }
   }
   if (existsSync(path.join(dir, 'artisan'))) {
     tasks.push(
-      task('artisan-migrate', 'Run migrations', 'php', 'php', ['artisan', 'migrate', '--force']),
+      task('artisan-migrate', 'Run migrations', 'migrate', 'php', ['artisan', 'migrate', '--force']),
       task('artisan-optimize', 'Optimize (cache config & routes)', 'php', 'php', ['artisan', 'optimize']),
       task('artisan-clear', 'Clear caches', 'php', 'php', ['artisan', 'optimize:clear']),
       task('artisan-storage-link', 'Link storage', 'php', 'php', ['artisan', 'storage:link']),
     );
   }
+  for (const m of migrations(dir)) if (!tasks.some((t) => t.id === m.run.id)) tasks.push(m.run);
   return tasks;
+}
+
+const MIGRATE_SCRIPTS = new Set(['migrate', 'db:migrate', 'migrate:deploy', 'migration:run']);
+
+/** Python in the project's virtualenv when it has one. */
+function python(dir: string): string {
+  for (const v of ['.venv', 'venv', 'env']) {
+    const p = path.join(dir, v, 'bin', 'python');
+    if (existsSync(p)) return p;
+  }
+  return 'python3';
+}
+
+export interface Migrations {
+  framework: string;
+  /** Applies pending migrations. */
+  run: TaskSpec;
+  /** Read-only: lists migrations and which are pending (null when the tool has none). */
+  status: TaskSpec | null;
+  /** Counts pending migrations in the status output (null: can't tell). */
+  pending(statusOutput: string): number | null;
+}
+
+/** How this project applies database migrations (empty when it has none we know). */
+export function migrations(dir: string): Migrations[] {
+  const out: Migrations[] = [];
+  const has = (f: string) => existsSync(path.join(dir, f));
+  if (has('artisan')) {
+    out.push({
+      framework: 'Laravel',
+      run: task('artisan-migrate', 'Run migrations', 'migrate', 'php', ['artisan', 'migrate', '--force']),
+      status: task('artisan-migrate-status', 'Migration status', 'migrate', 'php', ['artisan', 'migrate:status']),
+      pending: (o) => (o.match(/\bPending\b/g) ?? []).length,
+    });
+  }
+  if (has('prisma/schema.prisma')) {
+    out.push({
+      framework: 'Prisma',
+      run: task('prisma-migrate', 'Run migrations (Prisma)', 'migrate', 'npx', ['prisma', 'migrate', 'deploy']),
+      status: task('prisma-migrate-status', 'Migration status (Prisma)', 'migrate', 'npx', ['prisma', 'migrate', 'status']),
+      pending: (o) => (/Database schema is up to date/i.test(o) ? 0 : Number(/(\d+) migrations? (?:found in prisma\/migrations )?(?:have|has) not yet been applied/i.exec(o)?.[1] ?? NaN) || null),
+    });
+  }
+  if (has('manage.py')) {
+    const py = python(dir);
+    out.push({
+      framework: 'Django',
+      run: task('django-migrate', 'Run migrations (Django)', 'migrate', py, ['manage.py', 'migrate', '--noinput']),
+      status: task('django-showmigrations', 'Migration status (Django)', 'migrate', py, ['manage.py', 'showmigrations', '--plan']),
+      pending: (o) => (o.match(/^\[ \]/gm) ?? []).length,
+    });
+  }
+  if (has('bin/rails') && has('db/migrate')) {
+    out.push({
+      framework: 'Rails',
+      run: task('rails-migrate', 'Run migrations (Rails)', 'migrate', 'bin/rails', ['db:migrate']),
+      status: task('rails-migrate-status', 'Migration status (Rails)', 'migrate', 'bin/rails', ['db:migrate:status']),
+      pending: (o) => (o.match(/^\s*down\s/gm) ?? []).length,
+    });
+  }
+  const pkg = readJson(path.join(dir, 'package.json'));
+  const script = Object.keys((pkg?.scripts as Record<string, string> | undefined) ?? {}).find((n) => MIGRATE_SCRIPTS.has(n));
+  if (script && !out.length) {
+    out.push({ framework: 'npm script', run: task(`script:${script}`, script, 'migrate', packageManager(dir), ['run', script]), status: null, pending: () => null });
+  }
+  return out;
 }
 
 export function hasBuildScript(dir: string): boolean {

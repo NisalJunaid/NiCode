@@ -35,7 +35,7 @@ describe('permission bridge (MCP approve tool → daemon → phone)', () => {
     const dataDir = await mkdtemp(path.join(os.tmpdir(), 'nicode-perm-'));
     const requests: PermissionRequest[] = [];
     const broker = new PermissionBroker(dataDir, {
-      projectOf: () => '/projects/demo',
+      policyOf: () => ({ projectPath: '/projects/demo', analyze: false, allowRemember: true }),
       onWaiting: () => undefined,
       notify: (r) => requests.push(r),
     });
@@ -55,16 +55,26 @@ describe('permission bridge (MCP approve tool → daemon → phone)', () => {
       const res = await pending;
       expect(JSON.parse(res.result.content[0].text)).toEqual({ behavior: 'allow', updatedInput: { command: 'npm test -- --run' } });
 
-      // 2) Same prefix is now auto-allowed without asking the phone.
-      const auto = await mcp.call('tools/call', { name: 'approve', arguments: { tool_name: 'Bash', input: { command: 'npm run build' } } });
+      // 2) Same command ("npm test") is now auto-allowed without asking the phone.
+      const auto = await mcp.call('tools/call', { name: 'approve', arguments: { tool_name: 'Bash', input: { command: 'npm test -- --coverage' } } });
       expect(JSON.parse(auto.result.content[0].text).behavior).toBe('allow');
       expect(requests).toHaveLength(1);
 
-      // 3) Chained commands always ask; deny with a reason.
+      // 3) Chained or multi-line commands always ask; deny with a reason.
       const chained = mcp.call('tools/call', { name: 'approve', arguments: { tool_name: 'Bash', input: { command: 'npm test && rm -rf /' } } });
       await vi_waitFor(() => requests.length === 2);
+      expect(requests[1]!.canRemember).toBe(false);
       broker.respond(requests[1]!.requestId, { behavior: 'deny', message: 'not that' });
       expect(JSON.parse((await chained).result.content[0].text)).toMatchObject({ behavior: 'deny', message: 'not that' });
+      const multiline = mcp.call('tools/call', { name: 'approve', arguments: { tool_name: 'Bash', input: { command: 'npm test\nrm -rf ~' } } });
+      await vi_waitFor(() => requests.length === 3);
+      broker.respond(requests[2]!.requestId, { behavior: 'deny' });
+      await multiline;
+      // Another npm subcommand isn't covered by "npm test".
+      const other = mcp.call('tools/call', { name: 'approve', arguments: { tool_name: 'Bash', input: { command: 'npm publish' } } });
+      await vi_waitFor(() => requests.length === 4);
+      broker.respond(requests[3]!.requestId, { behavior: 'deny' });
+      await other;
 
       // 4) Wrong secret is refused.
       const bad = mcpClient({ NICODE_SOCKET: broker.socketPath, NICODE_SECRET: 'wrong', NICODE_SESSION_ID: 's1' });

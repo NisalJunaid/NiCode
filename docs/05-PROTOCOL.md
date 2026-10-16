@@ -12,6 +12,7 @@ The contract between the **daemon** (`server/`) and the **app** (`app/`). The ty
 | `GET /auth/challenge` | daemon | none (rate-limited) | A single-use login nonce, valid for 60 s |
 | `GET /ws` (upgrade) | daemon | signed challenge (phones) or short-lived token (browser) | Everything else |
 | `POST /permission` on the **unix socket** `<dataDir>/internal.sock` | daemon | socket file mode 600, plus the `X-Nicode-Internal` secret | Used by the MCP approve tool (see 02). It isn't on the TCP port, so Caddy can never proxy it |
+| `POST /rpc` on the **unix socket** `<dataDir>/control.sock` | daemon | socket file mode 600 (the daemon's user and root) | Local tools: `nicode deploy` and hosting panels. Body `{method, params}`, reply is a normal response frame (HTTP 200, 422 on error). Only `server.info`, `deploy.plan`, `deploy.run`, `deploy.history`; anything else → 403. The caller acts as a local non-key device named by the `X-Nicode-Actor` header, so production guards that need a phone are refused |
 
 Transport by mode: `https` → `wss://<ip-dashed>.sslip.io/ws` (Caddy terminates TLS). `local` → `ws://<lan-ip>:<port>/ws`. `tailscale` → `ws://<tailnet-ip>:<port>/ws`.
 
@@ -47,6 +48,8 @@ There are no reusable passwords for phones. Each phone holds a private key in it
 
 **Failures** return HTTP 401 before the upgrade. Per-IP exponential backoff starts after 5 failures (1 s up to 5 min); the client IP comes from `X-Forwarded-For` **only** when the TCP peer is 127.0.0.1. A successful login resets it.
 
+**Challenge rate limit:** `GET /auth/challenge` needs no login, so it's limited to 30 per minute per IP (HTTP 429). Otherwise one client could flood the challenge store and push out other phones' challenges.
+
 ## Frames
 All frames are UTF-8 JSON text messages.
 
@@ -74,6 +77,8 @@ While `SetupStatus.state` is `needs_claude_login`, only these methods are allowe
 (Signatures are in `types.ts`; only the non-obvious parts are listed here.)
 
 - **`server.info`**: the first call after connecting. The app checks `protocolVersion` and shows an "update server" banner if it differs.
+  - It also reports `role` (see "Production servers"), `isRoot`, and how Analyze chats are kept read-only: `analyzeIsolation` (`kernel` or `soft`). `analyzeBlocked` explains why Analyze can't run right now.
+  - Daemons older than 0.9 omit these fields; the app treats them as `development` / `soft`.
 - **`setup.claudeLogin.start`**: starts `claude setup-token` in a PTY and resolves once the login URL has been parsed (≤ 20 s). Only one login can be in flight; starting again kills the previous one.
 - **`setup.claudeLogin.submit`**: writes the code to the PTY and resolves after the token is captured, saved, and verified with a one-shot `claude -p` (≤ 90 s). Then it emits `setup.progress` with `state: "ready"`.
 - **`setup.claudeLogin.setToken`**: the manual fallback. It validates the `sk-ant-oat…` shape, saves the token, and verifies it like `submit`.
@@ -99,7 +104,16 @@ While `SetupStatus.state` is `needs_claude_login`, only these methods are allowe
   - `git.undoRestore {backupRef, proof}` goes back to a restore point, including the uncommitted work. `git.backups` lists restore points; they are kept 30 days.
 - **Step-up confirmation** (`ConfirmProof`):
   - Destructive actions take `proof: {nonce, sig}`. The nonce comes from `auth.confirmChallenge` (single use, 60 s).
-  - `sig` is the device key's signature over `confirmMessage(nonce, action, fields)`. For `git.restoreTo` the fields are `[projectPath, hash, mode]`; for `git.undoRestore` they are `[projectPath, backupRef]`, with `projectPath` exactly as sent.
+  - `sig` is the device key's signature over `confirmMessage(nonce, action, fields)`, with `projectPath` exactly as sent. The fields per action:
+
+    | Action | Fields |
+    |---|---|
+    | `git.restoreTo` | `[projectPath, hash, mode]` |
+    | `git.undoRestore` | `[projectPath, backupRef]` |
+    | `server.setRole` (to development) | `['development']` |
+    | `git.pull` (discard, on production) | `[projectPath, 'discard']` |
+    | `tasks.run` (migrate task, on production) | `[projectPath, taskId]` |
+    | `deploy.run` (on production) | `[projectPath, ...deployGuards(params)]` |
   - The app signs only after a fresh fingerprint/face check (ignoring the unlock grace period). Browser-token sessions can't confirm.
 - **Checkpoints** (git projects only):
   - Before every turn the daemon snapshots the project files into `refs/nicode/cp/<sessionId>/<turn>`: a temporary index → `write-tree` → `commit-tree`, without CRLF conversion. HEAD, the index, branches and the stash are never touched, and pushes don't include these refs.
@@ -121,10 +135,14 @@ While `SetupStatus.state` is `needs_claude_login`, only these methods are allowe
   - Neither source is an official API. If the endpoint refuses a token (some setup-tokens may lack the scope), `error` explains it and chat numbers are used.
 - **Images**: `claude.start` and `claude.send` accept `images: ImageInput[]` (up to 4; jpeg/png/webp/gif; ≤ 5 MB each as base64 without a `data:` prefix). They reach Claude as image blocks before the text. History keeps only `imageCount` on the `user_turn` marker, never the image data. The app resizes images to ≤ 1568 px JPEG before sending.
 - **`claude.interrupt`**: sends SIGINT. The session goes to `idle` once the process settles.
-- **`claude.setMode`**: takes effect on the next turn (the daemon respawns with `--resume` and the new flags if needed).
+- **`claude.setMode`**: takes effect on the next turn (the daemon respawns with `--resume` and the new flags if needed). A chat can't switch into or out of `analyze`; that needs a new chat (Analyze chats keep their own Claude state).
 - **`claude.history`**: returns events with `seq > sinceSeq` (all if omitted), up to 2000 per call. The client pages by calling again with the returned `lastSeq`.
 - **`claude.permission.respond`**:
-  - `remember: true` stores an allow rule for the project: the tool name, or for `Bash` the first word of the command, such as `npm`.
+  - `remember: true` stores an allow rule for the project: the tool name, or for `Bash` the command's first word (`ls`).
+    - Multi-purpose tools keep their first two words (`git status`, `npm test`), so "always allow" never covers `git push --force`.
+    - Command runners (`sudo`, `bash`, `env`, `xargs`, `find`, …) and chained, piped, substituted or multi-line commands are never remembered or auto-allowed.
+    - `PermissionRequest.canRemember: false` tells the app not to offer "Always allow". That's the case on production servers, where every command asks.
+    - Analyze chats keep their rules separate from writing chats.
   - `updatedInput` lets the user edit the input before allowing (for example, tweak a command).
   - `deny` with a `message` is passed back to Claude as the reason.
 - **`push.register`**: idempotent. It stores the Expo push token with optional `prefs` (`PushPrefs`: approvals, finished, appCrashes, siteDown; all on by default). Each notification carries `data.kind` (`permission`, `result`, `app`, `site`, `test`), and phones only get the kinds they want.
@@ -144,6 +162,7 @@ While `SetupStatus.state` is `needs_claude_login`, only these methods are allowe
 | `claude.status` | Session state transitions |
 | `claude.permission.request` / `resolved` | The agent wants to use a tool that needs approval / the request was answered or timed out (10 min → deny) |
 | `fs.changed` | Debounced (300 ms) file changes in projects the client has open (`fs.list` subscribes the project) |
+| `server.role` | The server's role changed (from a phone or `nicode role`); re-read `server.info` |
 
 ### Claude event stream
 The daemon passes the CLI's stream-json objects through **unchanged** inside `SeqEvent.event`, because the shapes change between CLI versions. The app renders them defensively:
@@ -163,7 +182,8 @@ Methods `sites.*` manage nginx sites on the server. The daemon needs root or pas
 - **`sites.status`**: `supported`, the web server, the server's public IP, certbot presence, and installed php-fpm versions (from `/run/php/php*-fpm.sock`).
 - **`sites.list`**: every file in `sites-available`, with enabled state (via `sites-enabled`), parsed domains, kind, root or proxy port, linked project (when the root is inside `projectsRoot`), and HTTPS with certificate expiry.
   - `managed` = created by niCode (marker comment).
-  - `protected` = niCode's own site or `default`; these are never changed.
+  - `protected` = niCode's own site, `default`, or a site owned by a hosting panel; these are never changed.
+  - `managedBy` = `nicode`, `panel` (first line `# managed-by: hostpanel [site=<slug>]`, written by Host Panel) or `null`; `panelSite` = that slug. The app shows panel sites as "Managed in Panel". Optional fields; older daemons omit them.
 - **`sites.checkDns {domain}`**: the domain's A records compared with the server IP.
 - **`sites.detect {projectPath}`**: suggests kind, webRoot and port (Laravel → php `public/`; Next/Nuxt/Express → proxy with `PORT` from `.env` or 3000; Vite/React → spa `dist/`; and so on).
 - **`sites.create`** (`SiteCreate`): steps `folder → config → enable → test → reload → certbot`, each reported live as a `sites.progress {opId, step, status, detail}` event.
@@ -182,9 +202,59 @@ Methods `apps.*` keep project apps running with pm2 as the daemon's user (`PM2_H
 - **`apps.create`** (`AppCreate`): optional install + build, then `pm2 start` (npm script or a plain command with `--interpreter none`), `pm2 save`, and a wait for the port. Steps and output stream as `tasks.step` / `tasks.output`.
 - **`apps.action {name, action}`**: start / stop / restart / delete, each followed by `pm2 save`.
 - **`apps.logs {name, lines?}`**: the last lines of stdout + stderr.
-- **`apps.deploy {name, opId?}`**: `git pull` → install → build → `pm2 reload` (no downtime) → port check.
-- **`tasks.list {projectPath}`**: one-tap tasks found in the project: git pull, install (npm/pnpm/yarn/composer), package.json scripts (not dev/watch/serve/start or pre/post hooks), Laravel artisan commands.
-- **`tasks.run {projectPath, taskId, opId?}`**: runs a listed task **by id only** (the client never sends a command line) and returns `{code, output}`; output streams as `tasks.output {opId, chunk}`. Times out after 30 minutes.
+- **`apps.deploy {name, opId?}`**: `git pull --ff-only` (stops on uncommitted changes) → install → build → `pm2 reload` (no downtime) → port check.
+- **`tasks.list {projectPath}`**: one-tap tasks found in the project:
+  - git pull and install (npm/pnpm/yarn/composer);
+  - package.json scripts (not dev/watch/serve/start or pre/post hooks);
+  - Laravel artisan commands;
+  - database migrations (group `migrate`): Laravel, Prisma, Django, Rails, or a `migrate` / `db:migrate` script.
+- **`tasks.run {projectPath, taskId, opId?, proof?}`**: runs a listed task **by id only** (the client never sends a command line) and returns `{code, output}`; output streams as `tasks.output {opId, chunk}`. Times out after 30 minutes.
+  - The git pull task refuses with code `dirty` when there are uncommitted changes.
+  - Migrate tasks on production servers need `proof`.
+
+## Production servers, Analyze and deploys
+- **Role.** `config.json → role` is `development` (default) or `production`. It's set:
+  - with `server.setRole {role, proof?}` (proof needed to go back to development);
+  - with `nicode role production|development` on the server;
+  - with the installer's `--role`.
+
+  The daemon applies changes without a restart and emits `server.role` (re-read `server.info`).
+- **On production servers:**
+  - `permissionModes` is `['analyze']` and `claude.start` defaults to it. Other modes are refused (`bad_request`), and every existing chat becomes an Analyze chat. A running writing turn is interrupted.
+  - Every command asks the phone; nothing is remembered.
+  - Discarding local changes and running migrations need `proof`.
+- **Analyze mode** (`permissionMode: 'analyze'`) is read-only troubleshooting, available on every server. The daemon runs the CLI in its ask-first mode with these additions:
+  - `--disallowedTools Edit,Write,MultiEdit,NotebookEdit` and an appended system prompt (the read-only brief).
+  - The approve broker refuses writing tools and git commands that change the repository, without asking.
+  - No checkpoints or turn summaries (they write refs into `.git`). `claude.rewind` is refused.
+  - With `analyzeIsolation: 'kernel'`, the CLI runs under **bubblewrap**:
+    - The whole filesystem is mounted read-only. Writable: a fresh `/tmp`, the chat's scratch dir (`<dataDir>/scratch/<sessionId>`, also `$NICODE_SCRATCH` / `$TMPDIR`) and the Analyze Claude state (`CLAUDE_CONFIG_DIR=<dataDir>/analyze-claude`).
+    - Every other mount of the project is read-only too, and top-level `.env*` files are shown with their secrets redacted.
+    - Escape routes are closed:
+      - other processes are invisible (`--unshare-pid`);
+      - setuid binaries can't elevate (`no_new_privs`: sudo, crontab);
+      - hidden or masked: tmux sockets, pm2's home except its logs, `/run/user/<uid>`, the Docker socket, `~/.ssh`, the gh login, git credentials, and niCode's own data and env file.
+  - **Production requires `kernel`**, and refuses to run Analyze when the daemon is root (`analyzeBlocked` says why). On development servers, `soft` falls back to tool blocking plus approvals.
+  - Before and after every turn the daemon fingerprints the repo: HEAD, local refs (not `refs/remotes/` or `refs/nicode/`), stashes and `git status`. If anything differs, it records a `repo_changed` marker (`RepoChanged`) and sends a push.
+- **Read-only database** (`analyze.db.*`, per project, kept in `<dataDir>/analyze-db.json`, mode 600):
+  - `suggest` reads the project's `.env` (`DATABASE_URL`, or `DB_CONNECTION` + `DB_HOST` / `DB_PORT` / `DB_DATABASE`). It returns SQL for a SELECT-only user with a fresh password: PostgreSQL also gets `default_transaction_read_only = on`, MySQL `GRANT SELECT, SHOW VIEW`.
+  - `set {url}` connects with `psql` / `mysql`, checks the user can't write, and saves it. Rejected users:
+    - PostgreSQL: superuser, `createrole`, write grants, or owning tables;
+    - MySQL: any privilege beyond `USAGE`, `SELECT`, `SHOW VIEW`, `SHOW DATABASES`, `PROCESS` or `REPLICATION CLIENT`.
+  - `get` returns kind, host, port, database, user and `verifiedAt`, never the password.
+  - Only Analyze chats get it: `$NICODE_READONLY_DB_URL`, `NICODE_READONLY_DB_*`, and `PG*` (or `MYSQL_HOST` / `MYSQL_TCP_PORT` / `MYSQL_PWD`).
+- **Pulls:**
+  - `git.pullPreflight {projectPath}` runs `git fetch` and returns `PullPreflight`: branch, upstream, ahead/behind, `dirty` (porcelain lines) and up to 50 incoming commits.
+  - `git.pull` is fast-forward only and refuses with code `dirty` (`data.dirty`) when there are local changes, unless `onDirty` is set:
+    - `stash` runs `git stash push -u -m "nicode: before pull <time>"`; the stash is kept.
+    - `discard` runs `reset --hard` + `clean -fd`, and needs proof on production.
+  - Pulls are refused while a writing Claude chat is busy in the project. Analyze chats don't block them.
+- **Deploys:**
+  - `deploy.plan {projectPath}` returns `DeployPlan`: the pull preflight, install commands, the build command (plus `artisan optimize` for Laravel), the migration command with its status output, the project's pm2 apps, and suggested `defaults` (migrate is on only when migrations are pending).
+  - `deploy.run {projectPath, steps, onDirty?, proof?, opId?}` runs pull → install → build → migrate → restart. Laravel is put in maintenance mode while it migrates, and `artisan up` always follows. Restart reloads every pm2 app of the project and checks its port.
+  - Steps stream as `tasks.step` / `tasks.output`. The result is a `DeployRecord`, which is also kept in `<dataDir>/deploys.json` (50 per project; `deploy.history`). The phones get a push when it finishes.
+  - It returns `dirty` before running anything if a pull would hit local changes. One deploy runs per project at a time.
+  - "Start" in the app uses `apps.action start`, or `apps.create` for a project without an app.
 
 ## Logs
 - **`logs.sources {projectPath?}`** returns a catalog of `LogSource {id, label, group, detail, projectPath}` built on the server:
@@ -206,7 +276,7 @@ Preview a project's **dev server**, a **running app** (any port), or a **linked 
   - `preview.open {port, opId?}`, on first use per port: writes an nginx site (`nicode-preview-<port>.conf`; hidden from `sites.list`) that proxies to the daemon, reloads nginx, and gets a certificate. Progress comes as `tasks.step` (`check`, `site`, `https`).
   - It returns a **one-time link** `…/__nicode/auth?t=<token>` (HMAC, 2 minutes, single use, bound to the port).
 - **The gate in the daemon:**
-  - Opening the link sets an `HttpOnly; Secure; SameSite=Lax` cookie valid for 12 h **for that preview host only**.
+  - Opening the link sets an `HttpOnly; Secure; SameSite=Lax` cookie valid for 12 h **for that preview host only**. The link and cookie are bound to the device that opened them, so revoking a phone ends its previews immediately.
   - Requests without it get 401. With it, requests and websocket upgrades (hot reload) are proxied to `127.0.0.1:<port>`, with `Host: localhost:<port>` and `X-Forwarded-Host`; the cookie is stripped before forwarding.
   - The daemon's own port can't be previewed.
 - `preview.list` and `preview.close {port}` (removes the nginx site + certificate). `preview.status` → `{supported, reason?}`, which needs nginx + root/sudo like Sites.

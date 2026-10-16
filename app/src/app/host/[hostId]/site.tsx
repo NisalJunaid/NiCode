@@ -118,7 +118,16 @@ export default function SiteDetail() {
         </View>
       ) : null}
 
-      {site.protected ? <Banner tone="accent" icon="shield-checkmark-outline" title="niCode's own address" body="This site connects the app to the server, so it can't be changed here." /> : null}
+      {site.managedBy === 'panel' ? (
+        <Banner
+          tone="accent"
+          icon="shield-checkmark-outline"
+          title="Managed in Panel"
+          body="The hosting panel on this server owns this site's web server config. Change domains, HTTPS or PHP there; code, deploys and logs still work here."
+        />
+      ) : site.protected ? (
+        <Banner tone="accent" icon="shield-checkmark-outline" title="niCode's own address" body="This site connects the app to the server, so it can't be changed here." />
+      ) : null}
 
       {!site.https && site.enabled && !site.protected ? (
         <Banner

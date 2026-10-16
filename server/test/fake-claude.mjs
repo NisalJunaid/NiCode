@@ -14,7 +14,20 @@ const flag = (name) => {
 const sessionId = flag('--resume') ?? flag('--session-id') ?? randomUUID();
 const out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
 
-out({ type: 'system', subtype: 'init', session_id: sessionId, model: 'fake-model', cwd: process.cwd(), permissionMode: flag('--permission-mode'), resumed: Boolean(flag('--resume')) });
+out({
+  type: 'system',
+  subtype: 'init',
+  session_id: sessionId,
+  model: 'fake-model',
+  cwd: process.cwd(),
+  permissionMode: flag('--permission-mode'),
+  resumed: Boolean(flag('--resume')),
+  // What Analyze chats are started with (checked by tests).
+  disallowedTools: flag('--disallowedTools') ?? null,
+  appendedPrompt: flag('--append-system-prompt') ?? null,
+  readonlyDb: process.env.NICODE_READONLY_DB_URL ? process.env.NICODE_READONLY_DB_NAME : null,
+  claudeConfigDir: process.env.CLAUDE_CONFIG_DIR ?? null,
+});
 
 function askPermission(toolName, input) {
   const cfg = JSON.parse(readFileSync(flag('--mcp-config'), 'utf8')).mcpServers.nicode;
@@ -41,7 +54,14 @@ rl.on('line', async (line) => {
   const images = msg.message.content.filter((b) => b.type === 'image' && b.source?.type === 'base64' && b.source.data).length;
   turns++;
   if (text.includes('slow')) await new Promise((r) => setTimeout(r, 30_000));
-  if (text.includes('needs-permission')) {
+  const bash = /needs-bash:(.+)$/m.exec(text);
+  if (bash) {
+    const command = bash[1].trim();
+    out({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu_b', name: 'Bash', input: { command } }] } });
+    const d = await askPermission('Bash', { command });
+    out({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_b', content: d.behavior === 'allow' ? 'ran' : `denied: ${d.message}`, is_error: d.behavior !== 'allow' }] } });
+    out({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: d.behavior === 'allow' ? 'bash approved' : `bash denied: ${d.message ?? ''}` }] } });
+  } else if (text.includes('needs-permission')) {
     out({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu_1', name: 'Write', input: { file_path: 'x.txt', content: 'hi' } }] } });
     const d = await askPermission('Write', { file_path: 'x.txt', content: 'hi' });
     out({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: d.behavior === 'allow' ? 'written' : `denied: ${d.message}`, is_error: d.behavior !== 'allow' }] } });

@@ -3,6 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { app } from './app.js';
 import { configPath, loadConfig } from './config.js';
+import { startControlServer } from './control.js';
 import { events } from './events.js';
 import { applyDeviceChange, closeAllClients, startHttpServer } from './http.js';
 import { log } from './log.js';
@@ -12,7 +13,11 @@ import { registerPreviewModule } from './modules/preview.js';
 import { startWatchers } from './modules/watch.js';
 import { initPreviewKey } from './preview/auth.js';
 import { startDevJanitor, stopAllDev } from './preview/dev.js';
+import { probeSandbox } from './claude/sandbox.js';
 import { initClaudeModule, registerClaudeModule, shutdownClaude } from './modules/claude.js';
+import { registerAnalyzeDbModule } from './modules/analyzeDb.js';
+import { registerDeployModule } from './modules/deploy.js';
+import { applyRole } from './modules/server.js';
 import { registerFsModule } from './modules/fs.js';
 import { registerGitModule } from './modules/git.js';
 import { registerProjectsModule } from './modules/projects.js';
@@ -28,6 +33,7 @@ async function main(): Promise<void> {
   app.init(loadConfig(cfgPath));
   await mkdir(app.config.dataDir, { recursive: true, mode: 0o700 });
   await app.probeClaude();
+  await probeSandbox(app.config.dataDir, app.isRoot);
 
   // Setup state as the app sees it: ready once Claude is logged in (any method).
   const state = app.claudeLoggedIn() ? 'ready' : 'needs_claude_login';
@@ -46,12 +52,18 @@ async function main(): Promise<void> {
   registerAppsModule();
   registerPreviewModule();
   registerLogsModule();
+  registerAnalyzeDbModule();
+  registerDeployModule();
   startWatchers();
   initPreviewKey(app.config.dataDir);
   startDevJanitor();
   await initClaudeModule();
 
   const server = startHttpServer();
+  const control = await startControlServer(app.config.dataDir).catch((err) => {
+    log.warn({ err }, 'control socket unavailable; `nicode deploy` will not work');
+    return null;
+  });
 
   // Devices and pairing codes change via `nicode pair` / `nicode token …` (SIGHUP) or config edits.
   const reloadTokens = () => {
@@ -60,6 +72,7 @@ async function main(): Promise<void> {
       app.config.devices = fresh.devices;
       app.config.pairingCodes = fresh.pairingCodes;
       applyDeviceChange();
+      if (fresh.role !== app.config.role) applyRole(fresh.role); // `nicode role …`
       log.info({ devices: app.config.devices.length, pairingCodes: app.config.pairingCodes.length }, 'devices reloaded');
     } catch (err) {
       log.warn({ err }, 'could not reload config');
@@ -88,6 +101,7 @@ async function main(): Promise<void> {
     stopAllDev();
     detachAllTerms(); // tmux sessions keep running
     closeAllClients();
+    control?.close();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 5000).unref();
   };

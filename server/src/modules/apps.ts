@@ -10,6 +10,9 @@ import { z } from 'zod';
 import type { AppProcess, AppsStatus } from '../../../protocol/types.js';
 import { app } from '../app.js';
 import { hasBuildScript, installTasks, listTasks, packageManager, splitCommand, startOptions } from '../apps/catalog.js';
+import { requireConfirmation } from '../auth/confirm.js';
+import { isGitRepo } from '../claude/checkpoints.js';
+import { dirtyFiles, safePull } from '../git/pull.js';
 import { log } from '../log.js';
 import { register, RpcError } from '../rpc.js';
 import { run } from '../util/exec.js';
@@ -23,7 +26,7 @@ const NAME_RE = /^[A-Za-z0-9._-]{1,60}$/;
 
 // ── pm2 helpers ──────────────────────────────────────────────────────────────
 
-async function pm2(args: string[], timeoutMs = 60_000) {
+export async function pm2(args: string[], timeoutMs = 60_000) {
   return run('pm2', args, { timeoutMs, env: cleanEnv({ PM2_HOME: process.env.PM2_HOME ?? path.join(app.home, '.pm2') }) }).catch(() => ({ code: 127, stdout: '', stderr: 'pm2 is not installed' }));
 }
 
@@ -102,7 +105,27 @@ async function status(): Promise<AppsStatus> {
 
 // ── step reporting ───────────────────────────────────────────────────────────
 
-async function installAndBuild(steps: Steps, dir: string): Promise<void> {
+const Proof = z.object({ nonce: z.string().min(16).max(100), sig: z.string().min(16).max(2000) });
+
+/** Fast-forward pull as a step; stops on uncommitted changes unless told to stash or discard them. */
+export async function pullStep(steps: Steps, dir: string, onDirty?: 'stash' | 'discard'): Promise<void> {
+  const label = 'Pull latest code';
+  if (!(await isGitRepo(dir))) {
+    steps.set('pull', label, 'skipped', 'Not a git repository');
+    return;
+  }
+  steps.set('pull', label, 'running', onDirty ? `git pull --ff-only (${onDirty} local changes first)` : 'git pull --ff-only');
+  try {
+    const r = await safePull(dir, onDirty);
+    steps.set('pull', label, 'done', r.stash ? `Local changes stashed as "${r.stash}"` : r.output.split('\n').pop());
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    steps.set('pull', label, 'failed', msg);
+    throw err;
+  }
+}
+
+export async function installAndBuild(steps: Steps, dir: string): Promise<void> {
   const env = cleanEnv({ NODE_ENV: 'development' }); // dev deps are needed to build
   for (const t of installTasks(dir)) await steps.exec(t.id, t.label, dir, t.file, t.args, env);
   if (hasBuildScript(dir)) await steps.exec('build', 'Build', dir, packageManager(dir), ['run', 'build'], cleanEnv({ NODE_ENV: 'production' }));
@@ -213,9 +236,7 @@ export function registerAppsModule(): void {
     const dir = current.cwd;
     if (!current.projectPath) throw new RpcError('forbidden', 'Only apps inside the projects folder can be deployed from niCode');
     const steps = new Steps(opId);
-    const git = listTasks(dir).find((t) => t.id === 'git-pull');
-    if (git) await steps.exec('pull', 'Pull latest code', dir, git.file, git.args, cleanEnv({ GIT_TERMINAL_PROMPT: '0' }), 120_000);
-    else steps.set('pull', 'Pull latest code', 'skipped', 'Not a git repository');
+    await pullStep(steps, dir);
     await installAndBuild(steps, dir);
     steps.set('restart', 'Restart (zero-downtime reload)', 'running');
     const r = await pm2(['reload', name], 120_000);
@@ -236,10 +257,17 @@ export function registerAppsModule(): void {
     listTasks(await projectOf(projectPath)).map(({ id, label, command, group }) => ({ id, label, command, group })),
   );
 
-  register('tasks.run', z.object({ projectPath: z.string(), taskId: z.string().max(80), opId: z.string().max(64).optional() }), async ({ projectPath, taskId, opId }) => {
+  register('tasks.run', z.object({ projectPath: z.string(), taskId: z.string().max(80), opId: z.string().max(64).optional(), proof: Proof.optional() }), async ({ projectPath, taskId, opId, proof }, ctx) => {
     const dir = await projectOf(projectPath);
     const t = listTasks(dir).find((x) => x.id === taskId);
     if (!t) throw new RpcError('not_found', 'That task is not available in this project');
+    // Migrations change the production database: fingerprint first.
+    if (t.group === 'migrate' && app.production) requireConfirmation(ctx, 'tasks.run', [projectPath, taskId], proof);
+    if (t.group === 'git') {
+      // Same rule as git.pull: never pull over local changes (the app offers stash / discard).
+      const dirty = await dirtyFiles(dir);
+      if (dirty.length) throw new RpcError('dirty', `There are ${dirty.length} uncommitted change(s) on this server. Stash or discard them first.`, { dirty: dirty.slice(0, 200) });
+    }
     const env = cleanEnv({ GIT_TERMINAL_PROMPT: '0', ...(t.group === 'build' ? { NODE_ENV: 'production' } : {}) });
     return runStreaming(t.file, t.args, { cwd: dir, env, opId, timeoutMs: 30 * 60_000 });
   });

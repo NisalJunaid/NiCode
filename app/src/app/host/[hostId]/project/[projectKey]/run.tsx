@@ -1,10 +1,13 @@
 import * as Haptics from 'expo-haptics';
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
-import { Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
+import { Alert, Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import type { AppProcess, AppsStatus, ProjectTask } from '@protocol';
 import { AppCard, Pm2Setup } from '@/components/AppCard';
 import { ConnectionBar } from '@/components/ConnectionBar';
+import { DeployPanel } from '@/components/DeployPanel';
+import { RpcCallError } from '@/lib/client';
+import { confirmAction } from '@/lib/confirm';
 import { OutputBox, useTaskStream } from '@/components/TaskConsole';
 import { Banner, Button, type IconName, Icon, IconButton, Loading, T } from '@/components/ui';
 import { useConnection } from '@/lib/connections';
@@ -16,15 +19,17 @@ const GROUP: Record<ProjectTask['group'], { title: string; icon: IconName }> = {
   git: { title: 'Code', icon: 'git-pull-request-outline' },
   install: { title: 'Dependencies', icon: 'cube-outline' },
   build: { title: 'Build', icon: 'hammer-outline' },
+  migrate: { title: 'Database migrations', icon: 'server-outline' },
   script: { title: 'Scripts', icon: 'flash-outline' },
-  php: { title: 'Laravel', icon: 'server-outline' },
+  php: { title: 'Laravel', icon: 'logo-laravel' },
 };
 
 /** Run tab: this project's running apps + one-tap tasks (pull, install, build, scripts) with live output. */
 export default function RunTab() {
   const c = useColors();
   const { hostId, projectPath } = useProject();
-  const { client, state, error } = useConnection(hostId);
+  const { client, state, error, info } = useConnection(hostId);
+  const production = info?.role === 'production';
   const [status, setStatus] = useState<AppsStatus | null>(null);
   const [apps, setApps] = useState<AppProcess[] | null>(null);
   const [tasks, setTasks] = useState<ProjectTask[] | null>(null);
@@ -57,17 +62,28 @@ export default function RunTab() {
 
   const runTask = async (task: ProjectTask) => {
     if (!client) return;
+    let proof;
+    if (task.group === 'migrate' && production) {
+      // Migrations change the production database: fresh fingerprint (bound to this task).
+      try {
+        proof = await confirmAction(client, 'tasks.run', [projectPath, task.id], 'Confirm migrating the production database');
+      } catch (err) {
+        return Alert.alert('Not confirmed', errorMessage(err));
+      }
+    }
     const opId = randomId();
     setRunning({ task, opId, code: null });
     try {
-      const r = await client.call('tasks.run', { projectPath, taskId: task.id, opId }, 31 * 60_000);
+      const r = await client.call('tasks.run', { projectPath, taskId: task.id, opId, ...(proof ? { proof } : {}) }, 31 * 60_000);
       setRunning((cur) => (cur?.opId === opId ? { ...cur, code: r.code } : cur));
       void Haptics.notificationAsync(r.code === 0 ? Haptics.NotificationFeedbackType.Success : Haptics.NotificationFeedbackType.Error);
       void load();
     } catch (err) {
-      setRunning((cur) => (cur?.opId === opId ? { ...cur, code: -1, error: errorMessage(err) } : cur));
+      const dirty = err instanceof RpcCallError && err.code === 'dirty' ? ' Use Deploy → Pull to stash or discard them first.' : '';
+      setRunning((cur) => (cur?.opId === opId ? { ...cur, code: -1, error: errorMessage(err) + dirty } : cur));
     }
   };
+  const deploy = client ? <DeployPanel client={client} hostId={hostId} projectPath={projectPath} production={production} onDone={() => void load()} /> : null;
 
   if (!status || !apps || !tasks) {
     return (
@@ -92,6 +108,8 @@ export default function RunTab() {
         <Button title="Live preview" icon="eye-outline" kind="secondary" onPress={() => router.push({ pathname: '/host/[hostId]/preview', params: { hostId, project: projectPath } })} style={{ flex: 1 }} />
         <Button title="Logs" icon="document-text-outline" kind="secondary" onPress={() => router.push({ pathname: '/host/[hostId]/logs', params: { hostId, project: projectPath } })} style={{ flex: 1 }} />
       </View>
+      {/* Production servers are mostly deployed to, so Deploy comes first there. */}
+      {production ? deploy : null}
 
       <View style={{ gap: space.sm }}>
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
@@ -120,6 +138,8 @@ export default function RunTab() {
           </View>
         )}
       </View>
+
+      {!production ? deploy : null}
 
       <View style={{ gap: space.sm }}>
         <T size="sm" weight="700" tone="dim" style={{ textTransform: 'uppercase', letterSpacing: 0.6 }}>

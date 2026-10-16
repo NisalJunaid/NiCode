@@ -2,7 +2,7 @@
 # Host detection. Read-only: inspects the machine and writes NI_* decisions to the profile file.
 # Every later step reads its decisions from the profile instead of asking the user.
 
-NI_REQUIRED_PKGS=(git tmux ripgrep fd-find jq build-essential python3 curl unzip ca-certificates gnupg qrencode ufw fail2ban unattended-upgrades openssl whiptail)
+NI_REQUIRED_PKGS=(git tmux ripgrep fd-find jq build-essential python3 curl unzip ca-certificates gnupg qrencode ufw fail2ban unattended-upgrades openssl whiptail bubblewrap)
 NI_DO_META="http://169.254.169.254/metadata/v1"
 
 _meta() { curl -fsS --max-time 2 "$NI_DO_META/$1" 2>/dev/null || true; }
@@ -369,7 +369,7 @@ detect_plan_text() {
         else line="$todo|install for $NI_USER$( (( NI_CLAUDE_AUTHED )) && echo ' (existing login reused)' || echo ' (login from the app afterwards)')"; fi ;;
       git)
         if (( NI_GH_INSTALLED )); then line="$yes|gh present"; else line="$todo|install GitHub CLI, git defaults"; fi ;;
-      daemon) line="$todo|build & run on 127.0.0.1:$NI_PORT" ;;
+      daemon) line="$todo|build & run on 127.0.0.1:$NI_PORT$( [[ -n "${NICODE_ROLE:-}" ]] && echo " as a $NICODE_ROLE server" || true); read-only Analyze sandbox (bubblewrap)" ;;
       finish) line="$todo|summary$( [[ "$NICODE_STAGE" == full ]] && echo ' + pairing QR' || true)" ;;
     esac
     printf '  %s %-26s %s\n' "${line%%|*}" "${NI_STEP_TITLE[$s]}" "${line#*|}"

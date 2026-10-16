@@ -11,8 +11,13 @@ import { Icon, IconButton, Segmented, T } from '../ui';
 
 export const MODE_INFO: Record<
   PermissionMode,
-  { label: string; desc: string; icon: 'hand-left-outline' | 'create-outline' | 'map-outline' | 'flash-outline' | 'warning-outline' }
+  { label: string; desc: string; icon: 'hand-left-outline' | 'create-outline' | 'map-outline' | 'flash-outline' | 'warning-outline' | 'search-outline' }
 > = {
+  analyze: {
+    label: 'Analyze',
+    desc: 'Read-only troubleshooting: code, logs and the database. Never changes the project or its git repo. Pick it when starting a chat.',
+    icon: 'search-outline',
+  },
   default: { label: 'Ask first', desc: 'Claude asks before editing files or running commands.', icon: 'hand-left-outline' },
   acceptEdits: { label: 'Auto-edit', desc: 'Edits files freely; still asks before running commands.', icon: 'create-outline' },
   plan: { label: 'Plan only', desc: 'Reads and proposes a plan. Changes nothing.', icon: 'map-outline' },
@@ -33,6 +38,8 @@ interface Props {
   mode: PermissionMode;
   model: string;
   modes: PermissionMode[];
+  /** An open chat: Analyze chats stay Analyze and other chats can't become one (start a new chat). */
+  analyzeChat?: boolean;
   placeholder?: string;
   /** Pre-fills the message box once per `id` (e.g. "Ask Claude" from a log). */
   draft?: { id: string; text: string };
@@ -46,7 +53,7 @@ interface Props {
 }
 
 /** Message box + mode/model chip + send/stop. Grows with the text; send never hides behind the keyboard. */
-export function Composer({ running, disabled, mode, model, modes, placeholder, draft, usage, onUsagePress, onSend, onStop, onChangeMode, onChangeModel }: Props) {
+export function Composer({ running, disabled, mode, model, modes, analyzeChat, placeholder, draft, usage, onUsagePress, onSend, onStop, onChangeMode, onChangeModel }: Props) {
   const c = useColors();
   const insets = useSafeAreaInsets();
   const [text, setText] = useState(draft?.text ?? '');
@@ -59,7 +66,7 @@ export function Composer({ running, disabled, mode, model, modes, placeholder, d
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [picking, setPicking] = useState(false);
   const canSend = (!!text.trim() || attachments.length > 0) && !disabled && !running && !picking;
-  const info = MODE_INFO[mode];
+  const info = MODE_INFO[mode] ?? MODE_INFO.default;
 
   const send = async () => {
     if (!canSend) return;
@@ -163,24 +170,26 @@ export function Composer({ running, disabled, mode, model, modes, placeholder, d
               How should Claude work?
             </T>
             {modes.map((m) => {
-              const mi = MODE_INFO[m];
+              const mi = MODE_INFO[m] ?? { label: m, desc: '', icon: 'hand-left-outline' as const };
               const active = m === mode;
+              const pickable = analyzeChat === undefined || (m === 'analyze') === analyzeChat;
               return (
                 <Pressable
                   key={m}
                   accessibilityRole="radio"
-                  accessibilityState={{ selected: active }}
+                  accessibilityState={{ selected: active, disabled: !pickable }}
+                  disabled={!pickable}
                   onPress={() => {
                     onChangeMode(m);
                     setSheet(false);
                   }}
-                  style={[styles.option, { borderColor: active ? c.accent : c.border, backgroundColor: active ? c.accentSoft : 'transparent' }]}
+                  style={[styles.option, { borderColor: active ? c.accent : c.border, backgroundColor: active ? c.accentSoft : 'transparent', opacity: pickable ? 1 : 0.45 }]}
                 >
                   <Icon name={mi.icon} size={20} color={m === 'bypassPermissions' ? c.danger : active ? c.accent : c.textDim} />
                   <View style={{ flex: 1 }}>
                     <T weight="600">{mi.label}</T>
                     <T size="sm" tone="dim">
-                      {mi.desc}
+                      {pickable ? mi.desc : analyzeChat ? 'This is a read-only Analyze chat. Start a new chat to make changes.' : 'Start a new chat to analyze read-only.'}
                     </T>
                   </View>
                   {active ? <Icon name="checkmark" size={18} color={c.accent} /> : null}

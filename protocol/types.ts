@@ -48,6 +48,7 @@ export type ErrorCode =
   | 'conflict'         // e.g. fs.write mtime mismatch
   | 'busy'             // e.g. claude session already running a turn
   | 'setup_required'   // Claude not logged in yet
+  | 'dirty'            // git.pull / deploy.run: uncommitted changes on the server (data.dirty lists them)
   | 'internal';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -102,7 +103,20 @@ export interface ServerInfo {
   permissionModes: PermissionMode[];
   /** The paired device this connection authenticated as. */
   device: DeviceInfo;
+  /** 'production': Claude may only analyze (read-only); deploy actions ask for a fingerprint. */
+  role: ServerRole;
+  /** The daemon (and so anything the phone runs) runs as root. */
+  isRoot: boolean;
+  /**
+   * How Analyze chats are kept read-only. 'kernel': Claude runs in a sandbox where the project
+   * (including .git) is mounted read-only. 'soft': tool blocking and approvals only.
+   */
+  analyzeIsolation: 'kernel' | 'soft';
+  /** Why Analyze can't run on this server right now (null when it can). */
+  analyzeBlocked: string | null;
 }
+
+export type ServerRole = 'development' | 'production';
 
 export interface DeviceInfo {
   id: string;
@@ -218,11 +232,13 @@ export function confirmMessage(nonce: string, action: string, fields: string[]):
 }
 
 /**
+ * 'analyze' = read-only troubleshooting: Claude reads code, logs and (through a read-only DB user)
+ * the database, but can't change the project or its git repository. The only mode on production servers.
  * 'default' = ask on the phone for anything risky. The daemon maps it to the CLI's own name
  * ('default' on older CLIs, 'manual' on newer ones). 'auto' lets the CLI decide routine actions
  * itself and only asks for risky ones (newer CLIs only).
  */
-export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'auto' | 'bypassPermissions';
+export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'auto' | 'bypassPermissions' | 'analyze';
 
 export interface ClaudeSessionSummary {
   sessionId: string;
@@ -288,6 +304,17 @@ export interface TurnSummary {
   tests?: { command: string; passed: boolean };
 }
 
+/**
+ * `nicode` marker `repo_changed`, recorded after an Analyze turn when the repository differs from
+ * before the turn (HEAD, refs, stashes or working tree). Analyze can't write, so this means
+ * something else changed it (for example a deploy that ran meanwhile).
+ */
+export interface RepoChanged {
+  turn: number;
+  /** Human-readable differences, e.g. "HEAD 1a2b3c4 → 5d6e7f8", "working tree: M src/app.ts". */
+  changes: string[];
+}
+
 /** An image attached to a chat message (max 4 per message, ≤ 5 MB each). Only `imageCount` is kept in history. */
 export interface ImageInput {
   mediaType: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
@@ -314,6 +341,8 @@ export interface Methods {
   'auth.devices': [Record<string, never>, (DeviceInfo & { current: boolean })[]];
   'auth.revoke': [{ id: string }, { ok: true }];
   'auth.renameDevice': [{ id: string; name: string }, { ok: true }];
+  /** Switching to 'development' needs `proof` (action 'server.setRole', fields ['development']). */
+  'server.setRole': [{ role: ServerRole; proof?: ConfirmProof }, { role: ServerRole }];
 
   // Projects
   'projects.list': [Record<string, never>, Project[]];
@@ -338,7 +367,14 @@ export interface Methods {
   'git.discard': [{ projectPath: string; paths: string[] }, { ok: true }];
   'git.commit': [{ projectPath: string; message: string }, { hash: string }];
   'git.push': [{ projectPath: string }, { ok: true; output: string }];
-  'git.pull': [{ projectPath: string }, { ok: true; output: string }];
+  /**
+   * Fast-forward pull. With uncommitted changes it fails with code 'dirty' unless `onDirty` says
+   * what to do: 'stash' (kept, recoverable) or 'discard' (needs `proof` on production servers,
+   * action 'git.pull', fields [projectPath, 'discard']).
+   */
+  'git.pull': [{ projectPath: string; onDirty?: 'stash' | 'discard'; proof?: ConfirmProof }, { ok: true; output: string; stash?: string }];
+  /** What a pull would do: local changes, and the commits it would bring in (after a fetch). */
+  'git.pullPreflight': [{ projectPath: string }, PullPreflight];
   'git.log': [{ projectPath: string; limit?: number; skip?: number }, GitCommit[]];
   'git.show': [{ projectPath: string; hash: string }, GitCommitDetail];
   'git.restorePreview': [{ projectPath: string; hash: string }, RestorePreview];
@@ -396,7 +432,23 @@ export interface Methods {
   'apps.deploy': [{ name: string; opId?: string }, { app: AppProcess; steps: TaskStepState[] }];
   'apps.startOptions': [{ projectPath: string }, AppStartOptions];
   'tasks.list': [{ projectPath: string }, ProjectTask[]];
-  'tasks.run': [{ projectPath: string; taskId: string; opId?: string }, { code: number; output: string }];
+  /** Migrate tasks on production servers need `proof` (action 'tasks.run', fields [projectPath, taskId]). */
+  'tasks.run': [{ projectPath: string; taskId: string; opId?: string; proof?: ConfirmProof }, { code: number; output: string }];
+  // Deploy (see docs/05 "Deploy")
+  'deploy.plan': [{ projectPath: string }, DeployPlan];
+  /**
+   * Runs the chosen steps in order: pull → install → build → migrate → restart. Progress:
+   * `tasks.step` / `tasks.output` with `opId`. On production, migrate and discard need `proof`
+   * (action 'deploy.run', fields [projectPath, ...deployGuards(params)]).
+   */
+  'deploy.run': [{ projectPath: string; steps: DeploySteps; onDirty?: 'stash' | 'discard'; proof?: ConfirmProof; opId?: string }, DeployRecord];
+  'deploy.history': [{ projectPath: string }, DeployRecord[]];
+  // Analyze mode: read-only database access per project (see docs/05 "Analyze")
+  'analyze.db.get': [{ projectPath: string }, AnalyzeDb | null];
+  'analyze.db.suggest': [{ projectPath: string }, AnalyzeDbSuggestion];
+  /** Tests the URL, verifies the user can't write, then saves it. The password never comes back. */
+  'analyze.db.set': [{ projectPath: string; url: string }, AnalyzeDb];
+  'analyze.db.clear': [{ projectPath: string }, { ok: true }];
   // Logs (see docs/05 "Logs")
   'logs.sources': [{ projectPath?: string }, LogSource[]];
   'logs.tail': [{ id: string; lines?: number; filter?: string }, { text: string }];
@@ -424,8 +476,12 @@ export interface Site {
   enabled: boolean;
   /** Created by niCode (only these can be removed from the app). */
   managed: boolean;
-  /** niCode's own site; never changed from the app. */
+  /** niCode's own site, or one owned by a hosting panel; never changed from the app. */
   protected: boolean;
+  /** Who writes this config: niCode, a hosting panel (`# managed-by: hostpanel`), or unknown. Older daemons omit it. */
+  managedBy?: 'nicode' | 'panel' | null;
+  /** The panel's id for the site (`site=<slug>` in its marker); null for the panel's own vhost. */
+  panelSite?: string | null;
   domains: string[];
   kind: SiteKind | 'unknown';
   root: string | null;
@@ -535,7 +591,88 @@ export interface ProjectTask {
   label: string;
   /** The exact command that will run. */
   command: string;
-  group: 'install' | 'build' | 'script' | 'php' | 'git';
+  group: 'install' | 'build' | 'script' | 'php' | 'git' | 'migrate';
+}
+
+export interface PullPreflight {
+  branch: string | null;
+  upstream: string | null;
+  /** `git status --porcelain` lines, e.g. " M src/app.ts", "?? notes.txt". Empty = clean. */
+  dirty: string[];
+  ahead: number;
+  behind: number;
+  /** Commits a pull would bring in (newest first, at most 50). */
+  incoming: { hash: string; subject: string; author: string; date: string }[];
+  /** Set when `git fetch` failed (the counts are then from the last fetch). */
+  fetchError: string | null;
+}
+
+export interface DeploySteps {
+  pull: boolean;
+  install: boolean;
+  build: boolean;
+  migrate: boolean;
+  /** Reload the project's pm2 apps. */
+  restart: boolean;
+}
+
+/** The deploy choices that need a fingerprint on production servers, in signing order. */
+export function deployGuards(p: { steps: DeploySteps; onDirty?: 'stash' | 'discard' }): string[] {
+  const out: string[] = [];
+  if (p.steps.pull && p.onDirty === 'discard') out.push('discard');
+  if (p.steps.migrate) out.push('migrate');
+  return out;
+}
+
+export interface DeployPlan {
+  production: boolean;
+  /** Null when the project isn't a git repository. */
+  pull: PullPreflight | null;
+  /** Commands each step would run (empty / null = the step doesn't apply). */
+  install: string[];
+  build: string | null;
+  /** `status` is the framework's migration status output (pending ones), when it has one. */
+  migrate: { taskId: string; command: string; status: string | null } | null;
+  apps: AppProcess[];
+  /** Suggested selection. */
+  defaults: DeploySteps;
+}
+
+export interface DeployRecord {
+  id: string;
+  projectPath: string;
+  device: string;
+  startedAt: string;
+  finishedAt: string;
+  /** HEAD before and after (short hashes, null outside git). */
+  before: string | null;
+  after: string | null;
+  steps: TaskStepState[];
+  ok: boolean;
+}
+
+export interface AnalyzeDb {
+  kind: 'postgres' | 'mysql';
+  host: string;
+  port: number;
+  database: string;
+  user: string;
+  verifiedAt: string;
+}
+
+/** Ready-to-run SQL that creates a read-only user, guessed from the project's .env. */
+export interface AnalyzeDbSuggestion {
+  kind: 'postgres' | 'mysql' | null;
+  /** Why nothing could be suggested (kind null). */
+  reason?: string;
+  host: string;
+  port: number;
+  database: string;
+  user: string;
+  /** Freshly generated; only part of `sql` and `url`. */
+  password: string;
+  sql: string;
+  url: string;
 }
 
 /** A Claude subscription login on the server. The token itself never leaves the server. */
@@ -648,6 +785,8 @@ export interface PermissionRequest {
   input: Record<string, unknown>;
   createdAt: string;
   expiresAt: string;
+  /** False when "Always allow" isn't offered (production servers, command runners, chained commands). */
+  canRemember?: boolean;
 }
 
 export type MethodName = keyof Methods;
@@ -671,8 +810,10 @@ export interface Events {
   'tasks.output': { opId: string; chunk: string };
   'logs.data': { followId: string; chunk: string };
   'claude.usage': { accountId: string; usage: AccountUsage };
-  /** Steps of apps.create / apps.deploy / apps.setup. */
+  /** Steps of apps.create / apps.deploy / apps.setup / deploy.run. */
   'tasks.step': { opId: string } & TaskStepState;
+  /** The server's role changed (from a phone or `nicode role`): re-read server.info. */
+  'server.role': { role: ServerRole };
   /** Live steps of sites.create / sites.enableHttps (matched by the opId the app sent). */
   'sites.progress': { opId: string; step: SiteStep; status: 'running' | 'done' | 'failed' | 'skipped'; detail?: string };
 }

@@ -479,10 +479,15 @@ step_daemon() {
   #    so no secret ever goes through cloud-init. Otherwise pair with `nicode pair` (shown at the end).
   cfg_dir="$NI_USER_HOME/.config/nicode"
   cfg="$cfg_dir/config.json"
-  local devices='[]' codes='[]'
+  local devices='[]' codes='[]' role='development'
   if [[ -f "$cfg" ]]; then
     devices="$(jq -c '(.devices // .tokens // []) | map(select(.publicKey != null or .expiresAt != null))' "$cfg")"
     codes="$(jq -c '.pairingCodes // []' "$cfg")"
+    role="$(jq -r '.role // "development"' "$cfg")" # set from the app or `nicode role`; kept on updates
+  fi
+  # --role production|development overrides (and is remembered for later runs).
+  if [[ -n "${NICODE_ROLE:-}" ]]; then
+    case "$NICODE_ROLE" in production|development) role="$NICODE_ROLE" ;; *) step_detail "--role must be production or development"; return 1 ;; esac
   fi
   if [[ -n "${NICODE_DEVICE_PUBKEY:-}" ]]; then
     local alg="${NICODE_DEVICE_PUBKEY%%:*}" pub="${NICODE_DEVICE_PUBKEY#*:}"
@@ -499,8 +504,12 @@ step_daemon() {
     tailscale) bind="$NI_PUBLIC_HOST" ;;
     local)     bind=0.0.0.0 ;;
   esac
-  tmpl_daemon_config "$bind" "$devices" "$src" "$codes" >"$cfg.tmp"
+  tmpl_daemon_config "$bind" "$devices" "$src" "$codes" "$role" >"$cfg.tmp"
   chown "$NI_USER:" "$cfg.tmp"; chmod 600 "$cfg.tmp"; mv -f "$cfg.tmp" "$cfg"
+
+  # 3b. The read-only sandbox for Analyze chats (bubblewrap); probed by the daemon at startup.
+  local sandbox
+  sandbox="$(ensure_analyze_sandbox)"
 
   # 4. Service.
   if [[ "$NI_HAS_SYSTEMD" != 1 ]]; then
@@ -520,7 +529,7 @@ step_daemon() {
   done
   (( ok )) || { step_detail "daemon did not answer /health — journalctl -u nicode"; return 1; }
   profile_set NI_DAEMON_INSTALLED 1
-  step_detail "running on ${bind}:${NI_PORT}"
+  step_detail "running on ${bind}:${NI_PORT} ($role); $sandbox"
 }
 
 # ───── lib/09-finish.sh ─────
@@ -582,7 +591,7 @@ finish_summary() {
 # Host detection. Read-only: inspects the machine and writes NI_* decisions to the profile file.
 # Every later step reads its decisions from the profile instead of asking the user.
 
-NI_REQUIRED_PKGS=(git tmux ripgrep fd-find jq build-essential python3 curl unzip ca-certificates gnupg qrencode ufw fail2ban unattended-upgrades openssl whiptail)
+NI_REQUIRED_PKGS=(git tmux ripgrep fd-find jq build-essential python3 curl unzip ca-certificates gnupg qrencode ufw fail2ban unattended-upgrades openssl whiptail bubblewrap)
 NI_DO_META="http://169.254.169.254/metadata/v1"
 
 _meta() { curl -fsS --max-time 2 "$NI_DO_META/$1" 2>/dev/null || true; }
@@ -949,7 +958,7 @@ detect_plan_text() {
         else line="$todo|install for $NI_USER$( (( NI_CLAUDE_AUTHED )) && echo ' (existing login reused)' || echo ' (login from the app afterwards)')"; fi ;;
       git)
         if (( NI_GH_INSTALLED )); then line="$yes|gh present"; else line="$todo|install GitHub CLI, git defaults"; fi ;;
-      daemon) line="$todo|build & run on 127.0.0.1:$NI_PORT" ;;
+      daemon) line="$todo|build & run on 127.0.0.1:$NI_PORT$( [[ -n "${NICODE_ROLE:-}" ]] && echo " as a $NICODE_ROLE server" || true); read-only Analyze sandbox (bubblewrap)" ;;
       finish) line="$todo|summary$( [[ "$NICODE_STAGE" == full ]] && echo ' + pairing QR' || true)" ;;
     esac
     printf '  %s %-26s %s\n' "${line%%|*}" "${NI_STEP_TITLE[$s]}" "${line#*|}"
@@ -959,6 +968,57 @@ detect_plan_text() {
   if [[ "$NI_USER" == root ]]; then printf '\n  ⚠ Runs as root to reuse your existing Claude login and files. Use --no-root for a separate "dev" user.\n'; fi
   if [[ "$NICODE_TRANSPORT" == local ]]; then printf '\n  ℹ Local transport: no TLS. Use only on a trusted LAN / for development.\n'; fi
   return 0
+}
+
+# ───── lib/sandbox.sh ─────
+# The read-only sandbox for Analyze chats (bubblewrap). Part of the daemon step, and
+# `nicode sandbox` (installer --sandbox-setup) re-runs it on its own.
+#
+# Ubuntu 24.04+ blocks unprivileged user namespaces unless an AppArmor profile allows them for
+# the program, so bwrap gets a small profile (the same approach Ubuntu uses for other sandboxes).
+
+NI_BWRAP_PROFILE=/etc/apparmor.d/nicode-bwrap
+
+# Can the developer user start a read-only sandbox? (0 = yes)
+_bwrap_works() {
+  command -v bwrap >/dev/null 2>&1 || return 1
+  as_user "bwrap --die-with-parent --unshare-pid --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp -- true" >>"$NI_LOG_FILE" 2>&1
+}
+
+# Installs bubblewrap and, where needed, the AppArmor profile. Prints a one-line summary.
+# Never fails: without the sandbox, Analyze still works on development servers (soft mode) and
+# the app explains what's missing on production servers.
+ensure_analyze_sandbox() {
+  local parts=()
+  if ! command -v bwrap >/dev/null 2>&1; then
+    if command -v apt-get >/dev/null 2>&1; then
+      DEBIAN_FRONTEND=noninteractive apt-get -y -o DPkg::Lock::Timeout=600 install --no-install-recommends bubblewrap >>"$NI_LOG_FILE" 2>&1 && parts+=("bubblewrap installed")
+    fi
+  fi
+  if ! command -v bwrap >/dev/null 2>&1; then
+    echo "Analyze sandbox unavailable: bubblewrap could not be installed"
+    return 0
+  fi
+  if ! _bwrap_works && [[ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" == 1 ]] && command -v apparmor_parser >/dev/null 2>&1; then
+    cat >"$NI_BWRAP_PROFILE" <<EOF
+# Managed by niCode: lets bubblewrap create the user namespace for niCode's read-only
+# Analyze sandbox (Ubuntu restricts unprivileged user namespaces by default).
+abi <abi/4.0>,
+include <tunables/global>
+
+profile nicode-bwrap $(command -v bwrap) flags=(unconfined) {
+  userns,
+  include if exists <local/nicode-bwrap>
+}
+EOF
+    apparmor_parser -r "$NI_BWRAP_PROFILE" >>"$NI_LOG_FILE" 2>&1 && parts+=("AppArmor profile added")
+  fi
+  if _bwrap_works; then
+    parts+=("Analyze sandbox ready")
+  else
+    parts+=("Analyze sandbox not working (see $NI_LOG_FILE)")
+  fi
+  join_by ', ' "${parts[@]}"
 }
 
 # ───── lib/state.sh ─────
@@ -1243,7 +1303,7 @@ server {
 EOF
 }
 
-# tmpl_daemon_config <bindHost> <devices json> <source dir> <pairing codes json>
+# tmpl_daemon_config <bindHost> <devices json> <source dir> <pairing codes json> <role>
 tmpl_daemon_config() {
   local h="$NI_USER_HOME"
   cat <<EOF
@@ -1261,7 +1321,8 @@ tmpl_daemon_config() {
   "envFile": "$(json_escape "$h/.config/nicode/env")",
   "statusFile": "$(json_escape "$NI_STATUS_FILE")",
   "claudeBin": "$(json_escape "${NI_CLAUDE_BIN:-claude}")",
-  "appDir": "$(json_escape "$3")"
+  "appDir": "$(json_escape "$3")",
+  "role": "$(json_escape "${5:-development}")"
 }
 EOF
 }
@@ -1690,6 +1751,27 @@ cmd_update() {
   bash "$INSTALLER" --unattended --stage full --redo daemon,finish
 }
 
+# Production servers: Claude may only analyze (read-only); migrations and discarding local
+# changes need a fingerprint in the app. The running daemon picks the change up from the config.
+cmd_role() {
+  local role="${1:-}"
+  if [[ -z "$role" ]]; then
+    role="$(cfg .role)"
+    echo "${role:-development}"
+    return 0
+  fi
+  case "$role" in production|development) ;; *) echo "usage: nicode role [production|development]" >&2; exit 2 ;; esac
+  need_root
+  [[ -f "$CONFIG" ]] || { echo "No daemon config at $CONFIG (is niCode installed?)" >&2; exit 1; }
+  config_update '.role = $r' --arg r "$role"
+  have_service && systemctl reload nicode 2>/dev/null || true
+  if [[ "$role" == production ]]; then
+    echo "This is now a production server: Claude can only analyze here (read-only)."
+  else
+    echo "This is now a development server: all Claude modes are available."
+  fi
+}
+
 cmd_uninstall() {
   need_root
   read -rp "Remove the niCode daemon, Caddy site and installer state? Projects, Claude and the user are kept. [y/N] " a
@@ -1721,18 +1803,80 @@ nicode — manage this niCode host
   token revoke <id|name>     Unpair one device (its open connections close immediately)
   token revoke-all           Unpair everything
   login [--force]            Log Claude Code in (skipped if already logged in)
+  role [production|development]
+                             Show or set the server role (production: Claude only analyzes, read-only)
+  sandbox                    Install/repair the read-only sandbox for Analyze chats (bubblewrap)
   doctor                     Re-detect the host and show what the installer would change
   logs [-f]                  Daemon logs
   restart                    Restart the daemon
+  deploy <project> [--steps pull,install,build,migrate,restart] [--on-dirty stash|discard] [--actor NAME] [--json]
+                             Run the app's deploy pipeline (default steps: what the app would suggest)
   update                     Update installer, Claude Code and daemon
   uninstall                  Remove niCode (keeps projects, user and Claude)
 EOF
+}
+
+# ── Deploys from the command line / a hosting panel, through the daemon's control socket ──
+control_rpc() {  # control_rpc <actor> <json frame> → response JSON on stdout
+  local sock; sock="$(cfg .dataDir)/control.sock"
+  [[ -S "$sock" ]] || { echo "The niCode daemon isn't running (no $sock). Try: sudo nicode restart" >&2; exit 1; }
+  curl -sS --unix-socket "$sock" --max-time 3600 -H 'content-type: application/json' -H "x-nicode-actor: $1" \
+    --data-binary @- http://localhost/rpc <<<"$2"
+}
+
+cmd_deploy() {
+  need_config
+  # The socket is mode 600 for the daemon's user; root can always connect.
+  [[ $EUID -eq 0 || "$(id -un)" == "$NI_USER" ]] || need_root
+  local project="" steps="" on_dirty="" actor="cli" json=false
+  while (($#)); do
+    case "$1" in
+      --steps) steps="${2:?--steps needs a list}"; shift ;;
+      --on-dirty) on_dirty="${2:?}"; shift ;;
+      --actor) actor="${2:?}"; shift ;;
+      --json) json=true ;;
+      -*) echo "Unknown option $1" >&2; exit 2 ;;
+      *) [[ -z "$project" ]] && project="$1" ;;
+    esac
+    shift
+  done
+  [[ -n "$project" ]] || { echo "usage: nicode deploy <project> [--steps …] [--on-dirty stash|discard] [--json]" >&2; exit 2; }
+  [[ "$project" == /* ]] || project="$(cfg .projectsRoot)/$project"
+  [[ -z "$on_dirty" || "$on_dirty" =~ ^(stash|discard)$ ]] || { echo "--on-dirty must be stash or discard" >&2; exit 2; }
+
+  local want
+  if [[ -n "$steps" ]]; then
+    [[ "$steps" =~ ^(pull|install|build|migrate|restart)(,(pull|install|build|migrate|restart))*$ ]] \
+      || { echo "--steps takes a comma list of: pull,install,build,migrate,restart" >&2; exit 2; }
+    want="$(jq -cn --arg s "$steps" '($s | split(",")) as $on | ["pull","install","build","migrate","restart"] | map({key: ., value: (. as $k | $on | index($k) != null)}) | from_entries')"
+  else
+    local plan
+    plan="$(control_rpc "$actor" "$(jq -cn --arg p "$project" '{method: "deploy.plan", params: {projectPath: $p}}')")"
+    want="$(jq -c '.result.defaults // empty' <<<"$plan")"
+    [[ -n "$want" ]] || { jq -r '.error.message // "Could not plan the deploy"' <<<"$plan" >&2; exit 1; }
+  fi
+
+  local out
+  out="$(control_rpc "$actor" "$(jq -cn --arg p "$project" --argjson s "$want" --arg d "$on_dirty" \
+    '{method: "deploy.run", params: ({projectPath: $p, steps: $s} + (if $d == "" then {} else {onDirty: $d} end))}')")"
+
+  if [[ "$json" == true ]]; then
+    jq '.result // {error: .error}' <<<"$out"
+  elif jq -e '.result' >/dev/null <<<"$out"; then
+    jq -r '.result.steps[] | "  \(if .status == "done" then "✓" elif .status == "failed" then "✗" elif .status == "skipped" then "–" else "…" end) \(.label)\(if .detail then "  (\(.detail))" else "" end)"' <<<"$out"
+    jq -r '.result | if .ok then "Deployed \(.projectPath) \(.before // "") → \(.after // "")" else "Deploy failed" end' <<<"$out"
+  else
+    jq -r '"Deploy refused: \(.error.message)"' <<<"$out" >&2
+  fi
+  jq -e '.result.ok == true' >/dev/null <<<"$out"
 }
 
 case "${1:-help}" in
   status)    shift; cmd_status "$@" ;;
   motd)      cmd_motd ;;
   doctor)    need_root; bash "$INSTALLER" --dry-run ;;
+  role)      shift; cmd_role "$@" ;;
+  sandbox)   need_root; bash "$INSTALLER" --sandbox-setup ;;
   login)     shift; cmd_login "$@" ;;
   pair)      shift; cmd_pair "$@" ;;
   token)
@@ -1746,6 +1890,7 @@ case "${1:-help}" in
     esac ;;
   logs)      shift; journalctl -u nicode --no-pager -n 200 "$@" ;;
   restart)   need_root; systemctl restart nicode; echo restarted ;;
+  deploy)    shift; cmd_deploy "$@" ;;
   update)    cmd_update ;;
   uninstall) cmd_uninstall ;;
   version)   echo "nicode CLI v$NICODE_CLI_VERSION" ;;
@@ -1789,6 +1934,10 @@ Options
   --stage base|full      base = tools only; full = + niCode daemon (default: full)
   --transport T          https | tailscale | local   (default: auto-detected)
   --domain NAME          Use your own domain instead of <ip>.sslip.io (A record must point here)
+  --role R               development | production (default: kept from the existing config, else
+                         development). production: Claude may only analyze (read-only), and
+                         migrations / discarding changes need a fingerprint in the app
+  --sandbox-setup        Only (re)install the read-only Analyze sandbox (bubblewrap) and restart the daemon
   --device-key ALG:B64   The app's PUBLIC key (RS256|ES256|Ed25519) to pre-pair a phone; no secret involved.
                          Without it, a one-time pairing QR is shown at the end (or run: nicode pair)
   --setup-id ID          Id that guards /setup/status (else generated)
@@ -1826,6 +1975,8 @@ while (($#)); do
     --stage)         NI_ARGS[NICODE_STAGE]="$2"; shift ;;
     --transport)     NI_ARGS[NICODE_TRANSPORT]="$2"; shift ;;
     --domain)        NI_ARGS[NICODE_DOMAIN]="$2"; shift ;;
+    --role)          NI_ARGS[NICODE_ROLE]="$2"; shift ;;
+    --sandbox-setup) NI_SANDBOX_ONLY=1 ;;
     --device-key)    NI_ARGS[NICODE_DEVICE_PUBKEY]="$2"; shift ;;
     --token)         echo "--token was removed: phones pair with a one-time code (nicode pair) or --device-key" >&2; exit 2 ;;
     --setup-id)      NI_ARGS[NICODE_SETUP_ID]="$2"; shift ;;
@@ -1910,6 +2061,16 @@ install_cli() {
 }
 
 # ── Run ──────────────────────────────────────────────────────────────────────
+if [[ -n "${NI_SANDBOX_ONLY:-}" && -z "${NI_DRY_RUN:-}" ]]; then
+  # `nicode sandbox`: uses the user detected by the last full run.
+  # shellcheck disable=SC1090
+  [[ -r "$NI_PROFILE_FILE" ]] && source "$NI_PROFILE_FILE"
+  [[ -n "${NI_USER:-}" ]] || { echo "niCode isn't installed here yet; run the installer first." >&2; exit 1; }
+  ensure_analyze_sandbox
+  if [[ -f /etc/systemd/system/nicode.service ]]; then systemctl restart nicode && echo "Daemon restarted."; fi
+  exit 0
+fi
+
 state_init            # creates /var/lib/nicode before anything writes there
 : >"$NI_PROFILE_FILE"
 [[ -z "${NI_DRY_RUN:-}" ]] && install_cli

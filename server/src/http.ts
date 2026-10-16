@@ -17,6 +17,7 @@ import {
   keyDeviceId,
   normalizeCode,
   publicKeyFrom,
+  RateLimit,
   sha256Hex,
   verifyDeviceSignature,
 } from './auth.js';
@@ -29,6 +30,7 @@ import { dispatch } from './rpc.js';
 const WS_SUBPROTOCOL_PREFIX = 'nicode.';
 const backoff = new Backoff();
 const challenges = new ChallengeStore();
+const challengeLimit = new RateLimit(Number(process.env.NICODE_CHALLENGE_LIMIT ?? 30), 60_000);
 
 interface Client {
   ws: WebSocket;
@@ -153,6 +155,8 @@ export function startHttpServer(): http.Server {
     }
     if (route === 'GET /auth/challenge') {
       if (backoff.blockedFor(ip) > 0) return sendJson(res, 429, { error: 'Too many failed logins; wait a minute' });
+      // Challenges are unauthenticated; without a cap one client could evict everyone else's.
+      if (!challengeLimit.take(ip)) return sendJson(res, 429, { error: 'Too many login attempts; wait a minute' });
       return sendJson(res, 200, challenges.issue());
     }
     if (route === 'POST /pair') {

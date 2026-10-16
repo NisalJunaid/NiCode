@@ -80,6 +80,7 @@ function RootStack() {
             <Stack.Screen name="host/[hostId]/preview" options={{ title: 'Preview' }} />
             <Stack.Screen name="host/[hostId]/logs" options={{ title: 'Logs' }} />
             <Stack.Screen name="host/[hostId]/log" options={{ title: '' }} />
+            <Stack.Screen name="host/[hostId]/analyze-db" options={{ title: 'Analyze: database' }} />
           </Stack>
         </ThemeProvider>
         </KeyboardProvider>

@@ -1,13 +1,27 @@
 import os from 'node:os';
 import { z } from 'zod';
-import { type DeviceInfo, PROTOCOL_VERSION } from '../../../protocol/types.js';
+import { type DeviceInfo, PROTOCOL_VERSION, type ServerRole } from '../../../protocol/types.js';
 import { app } from '../app.js';
-import { issueConfirmNonce } from '../auth/confirm.js';
+import { issueConfirmNonce, requireConfirmation } from '../auth/confirm.js';
 import { isExpired, isKeyDevice, isTokenDevice } from '../auth.js';
-import { type Device, updateDevices } from '../config.js';
+import { type Device, updateConfigField, updateDevices } from '../config.js';
+import { events } from '../events.js';
+import { log } from '../log.js';
 import { applyDeviceChange } from '../http.js';
 import { NoParams, register, RpcError } from '../rpc.js';
 import { run } from '../util/exec.js';
+import { onRoleChanged } from './claude.js';
+
+const Proof = z.object({ nonce: z.string().min(16).max(100), sig: z.string().min(16).max(2000) });
+
+/** Applies a role change to the running daemon (from the app, or `nicode role` editing the config). */
+export function applyRole(role: ServerRole): void {
+  if (app.config.role === role) return;
+  app.config.role = role;
+  log.info({ role }, 'server role changed');
+  onRoleChanged();
+  events.emit('server.role', { role });
+}
 
 let ghCache: { at: number; ok: boolean } = { at: 0, ok: false };
 
@@ -57,7 +71,19 @@ export function registerServerModule(): void {
       bypassAvailable: app.permissionModes().includes('bypassPermissions'),
       permissionModes: app.permissionModes(),
       device: deviceInfo(ctx.device),
+      role: app.config.role,
+      isRoot: app.isRoot,
+      analyzeIsolation: app.analyzeIsolation(),
+      analyzeBlocked: app.analyzeBlocked(),
     };
+  });
+
+  register('server.setRole', z.object({ role: z.enum(['development', 'production']), proof: Proof.optional() }), async ({ role, proof }, ctx) => {
+    // Lifting production restrictions is what a thief with an unlocked phone would do: fingerprint first.
+    if (role === 'development' && app.production) requireConfirmation(ctx, 'server.setRole', ['development'], proof);
+    await updateConfigField('role', role);
+    applyRole(role);
+    return { role };
   });
 
   register('auth.confirmChallenge', NoParams, () => issueConfirmNonce());

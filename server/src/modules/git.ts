@@ -6,6 +6,8 @@ import { run, runOk } from '../util/exec.js';
 import { requireConfirmation } from '../auth/confirm.js';
 import { CP_REF_RE } from '../claude/checkpoints.js';
 import * as history from '../git/history.js';
+import { pullPreflight, safePull } from '../git/pull.js';
+import { app } from '../app.js';
 import { projectBusy } from './claude.js';
 import { projectOf } from './projects.js';
 
@@ -131,11 +133,15 @@ export function registerGitModule(): void {
     return { ok: true as const, output: (r.stdout + r.stderr).trim() };
   });
 
-  register('git.pull', z.object(P), async ({ projectPath }) => {
+  register('git.pull', z.object({ ...P, onDirty: z.enum(['stash', 'discard']).optional(), proof: Proof.optional() }), async ({ projectPath, onDirty, proof }, ctx) => {
     const project = await projectOf(projectPath);
-    const r = await git(project, ['pull'], 120_000);
-    return { ok: true as const, output: (r.stdout + r.stderr).trim() };
+    if (onDirty === 'discard' && app.production) requireConfirmation(ctx, 'git.pull', [projectPath, 'discard'], proof);
+    if (projectBusy(project)) throw new RpcError('busy', 'Claude is working in this project. Stop it first.');
+    const r = await safePull(project, onDirty);
+    return { ok: true as const, ...r };
   });
+
+  register('git.pullPreflight', z.object(P), async ({ projectPath }) => pullPreflight(await projectOf(projectPath)));
 
   register('git.log', z.object({ ...P, limit: z.number().int().min(1).max(500).optional(), skip: z.number().int().min(0).max(1_000_000).optional() }), async ({ projectPath, limit, skip }) =>
     history.log(await projectOf(projectPath), limit ?? 50, skip ?? 0),

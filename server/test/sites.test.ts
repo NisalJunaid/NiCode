@@ -39,6 +39,15 @@ server {
     expect(parseSite('server { listen 80 default_server; server_name _; root /var/www/html; }').domains).toEqual([]);
   });
 
+  it('recognises sites owned by a hosting panel', () => {
+    const site = parseSite('# managed-by: hostpanel site=acme-shop\nserver { server_name acme.com; root /srv/sites/acme-shop/public; }');
+    expect(site).toMatchObject({ managed: false, panel: { site: 'acme-shop' }, domains: ['acme.com'] });
+    expect(parseSite('# managed-by: hostpanel (panel itself — protected)\nserver { server_name panel.example.com; }').panel).toEqual({ site: null });
+    expect(parseSite(renderSite({ domains: ['a.dev'], kind: 'static', root: '/x' })).panel).toBeNull();
+    // Only a marker line counts, not a mention inside another comment.
+    expect(parseSite('server { server_name a.dev; } # see managed-by: hostpanel docs').panel).toBeNull();
+  });
+
   it('validates domains and php versions', () => {
     expect(normalizeDomain(' https://Shop.Example.com/path ')).toBe('shop.example.com');
     expect(isValidDomain('shop.example.com')).toBe(true);
@@ -81,6 +90,7 @@ describe('sites API over the daemon', () => {
       await writeFile(path.join(nginx, 'sites-available', 'demo.test.conf'), renderSite({ domains: ['demo.test'], kind: 'static', root }));
       await writeFile(path.join(nginx, 'sites-available', 'nicode.conf'), 'server { server_name localhost; location / { proxy_pass http://127.0.0.1:7878; } }');
       await writeFile(path.join(nginx, 'sites-enabled', 'demo.test.conf'), '');
+      await writeFile(path.join(nginx, 'sites-available', 'shop.test.conf'), `# managed-by: hostpanel site=shop\nserver { server_name shop.test; root ${root}/public; }`);
       const c = await Client.connect(d.port, TOKEN);
       expect((await c.call('sites.status')).result).toMatchObject({ supported: true, webServer: 'nginx' });
       const list = (await c.call('sites.list')).result;
@@ -88,6 +98,10 @@ describe('sites API over the daemon', () => {
       expect(demo).toMatchObject({ enabled: true, managed: true, kind: 'static', domains: ['demo.test'], https: false });
       expect(list.find((s: any) => s.name === 'nicode.conf')).toMatchObject({ protected: true, kind: 'proxy', proxyPort: 7878 });
       expect((await c.call('sites.setEnabled', { name: 'nicode.conf', enabled: false })).error.code).toBe('forbidden');
+      expect(demo).toMatchObject({ managedBy: 'nicode', panelSite: null });
+      expect(list.find((s: any) => s.name === 'shop.test.conf')).toMatchObject({ protected: true, managed: false, managedBy: 'panel', panelSite: 'shop' });
+      expect((await c.call('sites.setEnabled', { name: 'shop.test.conf', enabled: true })).error.code).toBe('forbidden');
+      expect((await c.call('sites.remove', { name: 'shop.test.conf' })).error.code).toBe('forbidden');
       expect((await c.call('sites.config', { name: '../../etc/passwd' })).error.code).toBe('bad_request');
       expect((await c.call('sites.detect', { projectPath: d.demo })).result.kind).toBe('static');
       expect((await c.call('sites.create', { domain: 'not a domain', includeWww: false, project: { path: d.demo }, kind: 'static', webRoot: '', https: false })).error.code).toBe('bad_request');

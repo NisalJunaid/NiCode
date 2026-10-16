@@ -13,6 +13,7 @@ export type ChatItem =
   | { kind: 'tool'; key: string; id: string; name: string; input: Record<string, unknown>; result?: { text: string; isError: boolean } }
   | { kind: 'result'; key: string; ok: boolean; durationMs?: number; costUsd?: number; text?: string }
   | { kind: 'notice'; key: string; tone: 'info' | 'warning' | 'danger'; text: string }
+  | { kind: 'repoChanged'; key: string; changes: string[] }
   | { kind: 'init'; key: string; model?: string };
 
 type Block = { type?: string; text?: string; thinking?: string; id?: string; name?: string; input?: unknown; tool_use_id?: string; content?: unknown; is_error?: boolean };
@@ -50,6 +51,7 @@ export function buildChatItems(events: SeqEvent[]): ChatItem[] {
         } else if (sub === 'turn_summary' && Array.isArray(ev.files)) items.push({ kind: 'summary', key, summary: ev as unknown as TurnSummary });
         else if (sub === 'rewind' && typeof ev.undoRef === 'string')
           items.push({ kind: 'rewind', key, turn: typeof ev.turn === 'number' ? ev.turn : null, undoRef: ev.undoRef, changed: typeof ev.changed === 'number' ? ev.changed : 0 });
+        else if (sub === 'repo_changed' && Array.isArray(ev.changes)) items.push({ kind: 'repoChanged', key, changes: (ev.changes as unknown[]).map(String) });
         else if (sub === 'interrupted') items.push({ kind: 'notice', key, tone: 'info', text: 'Stopped' });
         else if (sub === 'process_exit') items.push({ kind: 'notice', key, tone: 'danger', text: text || 'Claude stopped unexpectedly' });
         else if (sub === 'stderr' && text.trim()) items.push({ kind: 'notice', key, tone: 'warning', text });

@@ -28,18 +28,34 @@ export default function Home() {
   );
 }
 
+type ListRow = { kind: 'header'; key: string; title: string } | { kind: 'host'; key: string; host: Host };
+
+/** Production servers first and set apart, so it's always clear where Claude can change things. */
 function HostList({ hosts }: { hosts: Host[] }) {
+  const prod = hosts.filter((h) => h.role === 'production');
+  const dev = hosts.filter((h) => h.role !== 'production');
+  const rows: ListRow[] = prod.length
+    ? [
+        { kind: 'header', key: 'h-prod', title: 'Production (Claude analyzes only)' },
+        ...prod.map((h): ListRow => ({ kind: 'host', key: h.id, host: h })),
+        ...(dev.length ? [{ kind: 'header', key: 'h-dev', title: 'Development' } as ListRow] : []),
+        ...dev.map((h): ListRow => ({ kind: 'host', key: h.id, host: h })),
+      ]
+    : [{ kind: 'header', key: 'h-all', title: 'Your servers' }, ...hosts.map((h): ListRow => ({ kind: 'host', key: h.id, host: h }))];
   return (
     <FlatList
-      data={hosts}
-      keyExtractor={(h) => h.id}
+      data={rows}
+      keyExtractor={(r) => r.key}
       contentContainerStyle={{ padding: space.lg, gap: space.md }}
-      ListHeaderComponent={
-        <T size="sm" tone="dim" style={{ marginBottom: space.xs }}>
-          Your servers
-        </T>
+      renderItem={({ item }) =>
+        item.kind === 'header' ? (
+          <T size="sm" tone="dim" style={{ marginTop: item.key === 'h-dev' ? space.md : 0 }}>
+            {item.title}
+          </T>
+        ) : (
+          <HostCard host={item.host} />
+        )
       }
-      renderItem={({ item }) => <HostCard host={item} />}
       ListFooterComponent={
         <View style={{ marginTop: space.md }}>
           <Button title="Add a server" icon="add" kind="secondary" onPress={() => router.push('/pair/scan')} />
@@ -53,16 +69,20 @@ function HostCard({ host }: { host: Host }) {
   const c = useColors();
   const { state, info } = useConnection(host.id);
   const s = connStatus(state);
+  const production = (info?.role ?? host.role) === 'production';
   return (
-    <Card onPress={() => router.push({ pathname: '/host/[hostId]', params: { hostId: host.id } })}>
+    <Card onPress={() => router.push({ pathname: '/host/[hostId]', params: { hostId: host.id } })} style={production ? { borderLeftWidth: 3, borderLeftColor: c.danger } : undefined}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
-        <View style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: c.accentSoft, alignItems: 'center', justifyContent: 'center' }}>
-          <Icon name="server-outline" color={c.accent} />
+        <View style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: production ? c.dangerSoft : c.accentSoft, alignItems: 'center', justifyContent: 'center' }}>
+          <Icon name={production ? 'shield-checkmark-outline' : 'server-outline'} color={production ? c.danger : c.accent} />
         </View>
         <View style={{ flex: 1, gap: 2 }}>
-          <T size="lg" weight="600" numberOfLines={1}>
-            {host.name}
-          </T>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+            <T size="lg" weight="600" numberOfLines={1} style={{ flexShrink: 1 }}>
+              {host.name}
+            </T>
+            {production ? <Badge text="PROD" tone="danger" /> : null}
+          </View>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
             <StatusDot tone={s.dot} />
             <T size="sm" tone="dim" numberOfLines={1}>

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import type { ServerRole } from '@protocol';
 import { kvStorage } from '@/lib/storage';
 
 /** A paired server. No secrets here: login uses the phone's device key (lib/deviceKey). */
@@ -12,6 +13,8 @@ export interface Host {
   scheme: 'https' | 'http';
   deviceId: string;
   addedAt: string;
+  /** Last role the server reported (for grouping the list before connecting). */
+  role?: ServerRole;
 }
 
 interface HostsState {

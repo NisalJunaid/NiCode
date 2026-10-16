@@ -19,7 +19,7 @@ import {
   signatureHeader,
   wsUrl,
 } from '@protocol';
-import type { Host } from '@/state/hosts';
+import { getHost, type Host, useHosts } from '@/state/hosts';
 import { KeyLockedError, KeyLostError, sign } from './deviceKey';
 
 export type ConnState =
@@ -59,7 +59,28 @@ export class NicodeClient {
   private connecting = false;
   private appStateSub: { remove(): void } | null = null;
 
-  constructor(public host: Host) {}
+  constructor(public host: Host) {
+    // Production / development can change while connected (another phone, or `nicode role`).
+    this.on('server.role', () => {
+      this.call('server.info', {})
+        .then((info) => this.setInfo(info))
+        .catch(() => undefined);
+    });
+  }
+
+  private setInfo(info: ServerInfo): void {
+    this.info = info;
+    const role = info.role ?? 'development'; // older daemons have no roles
+    if (getHost(this.host.id)?.role !== role) useHosts.getState().update(this.host.id, { role });
+    this.setState('open');
+  }
+
+  /** Re-reads server.info (after changing the role, for example). */
+  async refreshInfo(): Promise<ServerInfo> {
+    const info = await this.call('server.info', {});
+    this.setInfo(info);
+    return info;
+  }
 
   // ── lifecycle ──────────────────────────────────────────────────────────────
 
@@ -147,8 +168,7 @@ export class NicodeClient {
         resolve();
         this.call('server.info', {})
           .then((info) => {
-            this.info = info;
-            this.setState('open');
+            this.setInfo(info);
             this.emitLocal('connected', info);
           })
           .catch(() => undefined);

@@ -45,6 +45,8 @@ export const ConfigSchema = z.object({
   claudeBin: z.string().default('claude'),
   appDir: z.string().default(''),
   maxRunningSessions: z.number().int().positive().default(3),
+  /** 'production': Claude may only analyze; deploy actions need a fingerprint. */
+  role: z.enum(['development', 'production']).default('development'),
 });
 export type Config = z.infer<typeof ConfigSchema>;
 
@@ -96,6 +98,18 @@ export function updateDevices(
     raw.pairingCodes = next.pairingCodes;
     await writeFileAtomic(path, JSON.stringify(raw, null, 2) + '\n');
     return next;
+  };
+  const p = configWrite.then(run, run);
+  configWrite = p.catch(() => undefined);
+  return p;
+}
+
+/** Read-modify-write of one top-level config key (same serialization as updateDevices). */
+export function updateConfigField<K extends 'role'>(key: K, value: Config[K], path = configPath()): Promise<void> {
+  const run = async () => {
+    const raw = migrate(JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>);
+    raw[key] = value;
+    await writeFileAtomic(path, JSON.stringify(raw, null, 2) + '\n');
   };
   const p = configWrite.then(run, run);
   configWrite = p.catch(() => undefined);

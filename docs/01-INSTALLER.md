@@ -74,7 +74,7 @@ Each step is idempotent and skips itself when it's already done or doesn't apply
 | `node` | Node 22 LTS from NodeSource, if missing or older |
 | `claude` | Claude Code for the dev user (native installer, falling back to npm). **No login here** |
 | `git` | GitHub CLI; git defaults; identity if `--git-name`/`--git-email` are given |
-| `daemon` | Fetches the niCode repo to `/opt/nicode`, builds `server/`, writes `~/.config/nicode/config.json` (the token is stored hashed), installs and starts `nicode.service`, checks `/health`. If `server/` doesn't exist in the repo yet, it skips cleanly (state `base_ready`) |
+| `daemon` | Fetches the niCode repo to `/opt/nicode`, builds `server/`, writes `~/.config/nicode/config.json` (the token is stored hashed; the role is kept), installs and starts `nicode.service`, checks `/health`. If `server/` doesn't exist in the repo yet, it skips cleanly (state `base_ready`). Also sets up the read-only **Analyze sandbox**: installs `bubblewrap` and, on Ubuntu 24.04+, where unprivileged user namespaces are restricted, adds the AppArmor profile `/etc/apparmor.d/nicode-bwrap` (`userns` for bwrap only). It never fails the step |
 | `finish` | Final state, MOTD line, deletes the one-time answers file, prints the summary and pairing QR |
 
 `--stage base` stops before `daemon`, which is useful while `server/` doesn't exist yet. Run `sudo nicode update` later to add the daemon.
@@ -89,6 +89,8 @@ Run `bash nicode-install.sh --help`. The important ones:
 | `--stage base\|full` | Tools only, or tools plus the daemon (default `full`) |
 | `--device-key ALG:B64`, `--setup-id` | Supplied by the app: its phone's **public** key (pre-pairs the phone) and the id that guards `/setup/status`. Without a device key, a one-time pairing QR is shown at the end |
 | `--transport`, `--domain` | Override the transport choice, or use your own domain instead of sslip.io |
+| `--role production\|development` | Mark the server as production: Claude may only analyze there (read-only), and migrations or discarding local changes ask for a fingerprint. Without the flag, the existing config's role is kept (default `development`) |
+| `--sandbox-setup` | Only (re)install the Analyze sandbox and restart the daemon (what `nicode sandbox` runs) |
 | `--projects-root DIR`, `--no-root`, `--user NAME` | Override the detected projects folder and user |
 | `--device-name NAME` | Label for the `--device-key` phone |
 | `--source-dir DIR` | Build the daemon from a local checkout instead of cloning (WSL development) |
@@ -119,13 +121,19 @@ nicode pair [name] [--json]  # pair a phone: one-time code + QR (single use, 10 
 nicode token add [name] --expires 1h   # short-lived token for the browser test console (max 30d)
 nicode token list | revoke <id|name> | revoke-all
 nicode login                 # terminal Claude login (skipped if already logged in)
+nicode role [production|development]   # show or set the server role (production: Claude only analyzes)
+nicode sandbox               # install/repair the read-only Analyze sandbox (bubblewrap + AppArmor profile)
 nicode doctor                # re-detect and show what the installer would change
 nicode logs -f               # daemon logs
 nicode restart
+nicode deploy <project> [--steps pull,build,…] [--on-dirty stash|discard] [--actor NAME] [--json]
+                             # run the app's deploy pipeline via the daemon (default: the app's suggested steps)
 nicode update                # newest installer + Claude Code + rebuild daemon
 nicode uninstall             # remove niCode (keeps projects, user, Claude)
 ```
 `status --json` and `pair --json` are what the app runs over SSH when you use **Connect to my server**.
+
+`deploy` talks to the running daemon over `<dataDir>/control.sock`, so a push webhook, a hosting panel (Host Panel runs `nicode deploy <slug> --actor panel --json` as root) and the phone all use the same pipeline and history. It exits non-zero when the deploy fails or is refused.
 
 ## How the app uses it
 1. When creating a droplet, the app sends [cloud-init.yaml.tmpl](../installer/cloud-init.yaml.tmpl) as `user_data`, with the phone's **public** key (`NICODE_DEVICE_PUBKEY`) and a setup id. Nothing secret is in user_data.

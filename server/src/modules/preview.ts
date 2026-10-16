@@ -25,7 +25,7 @@ async function previewStatus(): Promise<PreviewStatus> {
   return st.supported ? { supported: true } : { supported: false, reason: st.reason ?? 'Previews need nginx on this server.' };
 }
 
-async function openPreview(port: number, opId?: string): Promise<PreviewLink> {
+async function openPreview(port: number, deviceId: string, opId?: string): Promise<PreviewLink> {
   if (port === app.config.port) throw new RpcError('forbidden', 'That is niCode itself');
   const steps = new Steps(opId);
   steps.set('check', `Port ${port} answers`, 'running');
@@ -39,12 +39,12 @@ async function openPreview(port: number, opId?: string): Promise<PreviewLink> {
   const host = previewHost(port, ip);
   const { https } = NO_NGINX ? { https: false } : await ensurePreviewSite(port, host, steps);
   const base = NO_NGINX ? `http://${host}:${app.config.port}` : `${https ? 'https' : 'http'}://${host}`;
-  return { url: `${base}/__nicode/auth?t=${issueOpenToken(port)}`, host, port, https };
+  return { url: `${base}/__nicode/auth?t=${issueOpenToken(port, deviceId)}`, host, port, https };
 }
 
 export function registerPreviewModule(): void {
   register('preview.status', z.object({}).passthrough(), previewStatus);
-  register('preview.open', z.object({ port: Port, opId: z.string().max(64).optional() }), ({ port, opId }) => openPreview(port, opId));
+  register('preview.open', z.object({ port: Port, opId: z.string().max(64).optional() }), ({ port, opId }, ctx) => openPreview(port, ctx.device.id, opId));
   register('preview.list', z.object({}).passthrough(), () => (NO_NGINX ? [] : listPreviewSites()));
   register('preview.close', z.object({ port: Port }), async ({ port }) => {
     if (!NO_NGINX) await removePreviewSite(port);

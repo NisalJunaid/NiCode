@@ -99,9 +99,12 @@ server/
   "envFile": "/home/dev/.config/nicode/env",       // KEY=VALUE lines; holds CLAUDE_CODE_OAUTH_TOKEN
   "statusFile": "/var/lib/nicode/public/status.json",
   "claudeBin": "/home/dev/.local/bin/claude",
-  "appDir": "/opt/nicode"
+  "appDir": "/opt/nicode",
+  "role": "development"          // or "production": Claude may only analyze (read-only); see docs/05
 }
 ```
+- `role` is changed by `server.setRole` (fingerprint to leave production), `nicode role …` or the installer's `--role`, and applied on reload without a restart. Re-running the installer keeps the existing role.
+- Analyze chats run Claude under bubblewrap (`src/claude/sandbox.ts`); the daemon probes it at startup (`analyzeIsolation` in `server.info`). Their Claude state lives in `<dataDir>/analyze-claude`, scratch files in `<dataDir>/scratch/<sessionId>`, read-only DB URLs in `<dataDir>/analyze-db.json`, and deploy history in `<dataDir>/deploys.json`.
 - Every config write (pair, revoke, rename) is atomic: tmp file + rename, keeping mode 600 and the owner.
 - **Reload:** on SIGHUP (`ExecReload` in the unit, used by `nicode token add/revoke`) and on `fs.watch` of the config file, re-read `tokens`, and close sockets whose device no longer exists (WebSocket close code 4401).
 - The env file is also loaded by systemd. When the daemon writes a new token there, it also sets `process.env` so child processes get it without a restart.
@@ -109,7 +112,7 @@ server/
 ## Startup
 1. Load and validate the config. Ensure `dataDir/{sessions,tmp}` exist.
 2. Compute the setup state. Claude is logged in if **`~/.claude/.credentials.json` exists (normal `/login`) or `CLAUDE_CODE_OAUTH_TOKEN` is in env/envFile** → `ready`; otherwise `needs_claude_login`. Re-check this whenever `server.info` is called, because the user may have logged in over SSH meanwhile. Write it to `statusFile` via `status.setState()`, preserving the installer's `steps`.
-3. Start the internal unix-socket server (`dataDir/internal.sock`, mode 600), then the HTTP/WS server.
+3. Start the internal unix-socket server (`dataDir/internal.sock`, mode 600), then the HTTP/WS server, then the control socket (`dataDir/control.sock`, mode 600; `src/control.ts`) for `nicode deploy` and hosting panels. It only dispatches an allowlist of methods (see 05).
 4. On SIGTERM: stop accepting connections, SIGINT running Claude processes, flush stores, close PTY clients (**don't** kill tmux sessions), and exit within 5 s.
 
 ## RPC core
@@ -232,6 +235,7 @@ Before writing, append and broadcast the daemon marker `{"type":"nicode","subtyp
 - [ ] No params ever reach a shell string. Paths are guarded with realpath. Symlink-escape test passes.
 - [ ] Logs never contain tokens. pino `redact` covers headers and env, and the PTY output of the login flows is masked.
 - [ ] The internal socket has mode 600 and requires the secret.
+- [ ] The control socket has mode 600, answers only its allowlist, and its callers can't pass production guards.
 - [ ] The daemon runs as the dev user and never calls sudo itself.
 
 ## Milestones and acceptance

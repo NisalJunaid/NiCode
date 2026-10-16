@@ -10,6 +10,13 @@ import { radius, space, useColors } from '@/theme';
 import { DiffView, editToLines } from '../Diff';
 import { Button, Field, type IconName, Icon, T } from '../ui';
 
+/** Multi-purpose tools are remembered with their subcommand ("git status"), like the server does. */
+const TWO_WORD = new Set(['git', 'npm', 'pnpm', 'yarn', 'bun', 'npx', 'composer', 'php', 'docker', 'pm2', 'systemctl', 'kubectl', 'cargo', 'go', 'python', 'python3', 'node', 'gh', 'apt', 'apt-get']);
+function bashRule(cmd: string): string {
+  const [first = '', second = ''] = cmd.trim().split(/\s+/);
+  return TWO_WORD.has(first) && second ? `${first} ${second}` : first;
+}
+
 /**
  * "Claude wants to …" — pinned above the composer until answered. Big, unambiguous buttons;
  * "Always" explains exactly what will be remembered.
@@ -27,7 +34,7 @@ export function PermissionCard({ hostId, client, req, queued }: { hostId: string
   }, [req.requestId]);
 
   const cmd = typeof req.input.command === 'string' ? req.input.command : '';
-  const alwaysLabel = req.toolName === 'Bash' ? (cmd && !/[;&|`$<>]/.test(cmd) ? `Always allow "${cmd.split(/\s+/)[0]}"` : null) : `Always allow ${s.title}`;
+  const alwaysLabel = req.canRemember === false ? null : req.toolName === 'Bash' ? (cmd && !/[;&|`$<>()\\\n\r]/.test(cmd) ? `Always allow "${bashRule(cmd)}"` : null) : `Always allow ${s.title}`;
 
   const respond = async (behavior: 'allow' | 'deny', remember = false) => {
     setBusy(behavior + (remember ? '+' : ''));

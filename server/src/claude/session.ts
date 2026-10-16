@@ -9,9 +9,14 @@ import { events } from '../events.js';
 import { log, maskSecrets } from '../log.js';
 import { RpcError } from '../rpc.js';
 import { LineSplitter } from '../util/exec.js';
+import { readonlyDb } from '../modules/analyzeDb.js';
+import { sendPush } from '../modules/push.js';
+import { adoptTranscript, ANALYZE_DISALLOWED_TOOLS, analyzeBrief, analyzeConfigDir, scratchDirOf } from './analyze.js';
 import { noteRateLimitEvent } from './usage.js';
 import { changes, CP_PREFIX, isGitRepo, prune, resolveRef, restoreFiles, saveRef, snapshot } from './checkpoints.js';
 import type { PermissionBroker } from './permissions.js';
+import { diffFingerprints, type RepoFingerprint, repoFingerprint } from './repoGuard.js';
+import { sandboxArgs, sandboxEnv, sandboxSupport } from './sandbox.js';
 import type { SessionStore, StoredSession } from './store.js';
 
 const IDLE_KILL_MS = 30 * 60_000;
@@ -50,8 +55,11 @@ export class ClaudeSession {
   private idleTimer: NodeJS.Timeout | null = null;
   private respawnAfterTurn = false;
   busy = false;
-  /** The checkpoint of the turn in progress (ref is null when the project isn't a git repo). */
-  private turn: { n: number; ref: string | null } | null = null;
+  /**
+   * The turn in progress: its checkpoint (null when the project isn't a git repo, and always in
+   * Analyze chats, which never write to .git) and, for Analyze chats, the repo fingerprint before it.
+   */
+  private turn: { n: number; ref: string | null; before: RepoFingerprint | null } | null = null;
   private testCalls = new Map<string, string>();
   private lastTest: { command: string; passed: boolean } | null = null;
   private summarizing: Promise<void> = Promise.resolve();
@@ -66,6 +74,11 @@ export class ClaudeSession {
 
   get id(): string {
     return this.s.sessionId;
+  }
+
+  /** Read-only troubleshooting chat (see claude/sandbox.ts and claude/analyze.ts). */
+  get analyze(): boolean {
+    return this.s.permissionMode === 'analyze';
   }
 
   private setState(state: ClaudeSessionState, error?: string): void {
@@ -112,11 +125,41 @@ export class ClaudeSession {
     args.push('--mcp-config', mcpPath, '--permission-prompt-tool', 'mcp__nicode__approve');
     if (app.caps.permissionPromptsFlag) args.push('--permission-prompts', 'host');
 
-    log.info({ sessionId: this.id, cwd: this.s.projectPath, resume: Boolean(this.s.claudeSessionId) }, 'starting claude');
     // Tests substitute a fake CLI (test/fake-claude.mjs) that speaks the same stream-json protocol.
     const shim = process.env.NICODE_TEST_CLAUDE_SHIM;
-    const opts = { cwd: this.s.projectPath, env: app.claudeEnv(), stdio: 'pipe' as const };
-    const proc = shim ? spawn(process.execPath, [shim, ...args], opts) : spawn(app.config.claudeBin, args, opts);
+    let file = shim ? process.execPath : app.config.claudeBin;
+    let fileArgs = shim ? [shim, ...args] : args;
+    let env = app.claudeEnv();
+    let sandboxed = false;
+    if (this.analyze) {
+      const blocked = app.analyzeBlocked();
+      if (blocked) throw new RpcError('forbidden', blocked);
+      const scratch = scratchDirOf(this.id);
+      const configDir = analyzeConfigDir();
+      await mkdir(scratch, { recursive: true, mode: 0o700 });
+      await mkdir(configDir, { recursive: true, mode: 0o700 });
+      if (this.s.claudeSessionId) await adoptTranscript(this.s.claudeSessionId).catch((err) => log.warn({ err }, 'could not adopt transcript'));
+      const db = await readonlyDb(this.s.projectPath);
+      sandboxed = sandboxSupport().available;
+      fileArgs.push('--disallowedTools', ANALYZE_DISALLOWED_TOOLS.join(','));
+      fileArgs.push('--append-system-prompt', analyzeBrief({ kernel: sandboxed, db, scratch }));
+      env = sandboxEnv({ ...env, ...db?.env }, { scratchDir: scratch, claudeConfigDir: configDir });
+      if (sandboxed) {
+        const sb = await sandboxArgs({
+          projectPath: this.s.projectPath,
+          scratchDir: scratch,
+          isRoot: app.isRoot,
+          claudeConfigDir: configDir,
+          hideDirs: [app.config.dataDir, path.dirname(app.config.envFile)],
+          exposeFiles: [mcpPath, this.deps.broker.socketPath],
+        });
+        fileArgs = [...sb, '--', file, ...fileArgs];
+        file = 'bwrap';
+      }
+    }
+
+    log.info({ sessionId: this.id, cwd: this.s.projectPath, resume: Boolean(this.s.claudeSessionId), analyze: this.analyze, sandboxed }, 'starting claude');
+    const proc = spawn(file, fileArgs, { cwd: this.s.projectPath, env, stdio: 'pipe' });
     const lines = new LineSplitter();
     proc.stdout.setEncoding('utf8');
     proc.stderr.setEncoding('utf8');
@@ -169,6 +212,7 @@ export class ClaudeSession {
       this.lastTest = null;
       this.testCalls.clear();
       if (turn?.ref) this.summarizing = this.summarize(turn.n, turn.ref, tests).catch((err) => log.warn({ err }, 'turn summary failed'));
+      if (turn?.before) this.summarizing = this.checkUnchanged(turn.n, turn.before).catch((err) => log.warn({ err }, 'repo check failed'));
       if (this.respawnAfterTurn) {
         this.respawnAfterTurn = false;
         this.stopProcess();
@@ -205,8 +249,26 @@ export class ClaudeSession {
     }
   }
 
+  /** After an Analyze turn: report any change to the repository (Analyze can't make one). */
+  private async checkUnchanged(n: number, before: RepoFingerprint): Promise<void> {
+    const after = await repoFingerprint(this.s.projectPath);
+    if (!after) return;
+    const diff = diffFingerprints(before, after);
+    if (!diff.length) return;
+    log.warn({ sessionId: this.id, changes: diff }, 'repository changed during an analyze turn');
+    this.record({ type: 'nicode', subtype: 'repo_changed', turn: n, changes: diff });
+    void sendPush(`⚠️ ${path.basename(this.s.projectPath)}: repo changed`, `During an analysis: ${diff[0]}`, {
+      kind: 'result',
+      sessionId: this.id,
+      projectPath: this.s.projectPath,
+      host: app.config.publicHost,
+    });
+  }
+
   /** Snapshot of the files before a turn (git repos only). Never fails the turn. */
   private async checkpoint(n: number): Promise<string | null> {
+    // Analyze chats never write to the repository, not even niCode's own checkpoint refs.
+    if (this.analyze) return null;
     try {
       this.isRepo ??= await isGitRepo(this.s.projectPath);
       if (!this.isRepo) return null;
@@ -245,6 +307,7 @@ export class ClaudeSession {
 
   /** Rewinds the project files to a checkpoint (a turn's "before", or an undo point). */
   async rewind(target: { turn: number } | { ref: string }): Promise<{ changed: number; undoRef: string }> {
+    if (this.analyze) throw new RpcError('forbidden', 'Analyze chats are read-only; there is nothing to rewind');
     if (this.busy) throw new RpcError('busy', 'Stop Claude first, then rewind');
     await this.summarizing;
     const ref = 'turn' in target ? `${CP_PREFIX}${this.id}/${target.turn}` : target.ref;
@@ -273,7 +336,8 @@ export class ClaudeSession {
     const n = this.s.turns++;
     this.deps.store.upsert(this.s);
     const ref = await this.checkpoint(n);
-    this.turn = { n, ref };
+    const before = this.analyze ? await repoFingerprint(this.s.projectPath).catch(() => null) : null;
+    this.turn = { n, ref, before };
     this.record({ type: 'nicode', subtype: 'user_turn', text, turn: n, checkpoint: ref, ...(images.length ? { imageCount: images.length } : {}) });
     const note = this.pendingNote;
     this.pendingNote = null;
@@ -322,6 +386,17 @@ ${text}` : text }],
     this.deps.store.upsert(this.s);
     if (this.busy) this.respawnAfterTurn = true;
     else this.stopProcess();
+  }
+
+  /** The server became a production server: from now on this chat only analyzes. */
+  makeAnalyze(): void {
+    if (this.analyze) return;
+    if (this.busy) this.interrupt();
+    this.s.permissionMode = 'analyze';
+    this.deps.store.upsert(this.s);
+    this.stopProcess();
+    this.pendingNote =
+      '[niCode note: this server is now a production server, so this chat is in read-only Analyze mode. Do not modify files, git, the database or services; investigate and report.]';
   }
 
   /** After a Claude account switch: the next turn starts a fresh CLI process with the new login. */

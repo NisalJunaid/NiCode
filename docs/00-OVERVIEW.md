@@ -62,7 +62,20 @@ App                         DigitalOcean                 Droplet
   - **Pairing** uses a one-time code from `nicode pair` (single use, expires after 10 minutes), so a screenshot of the QR is useless afterwards.
   - **Every connection** signs a fresh single-use challenge from the server, so captured traffic can't be replayed.
   - The browser test console uses **short-lived** tokens only (`nicode token add --expires 1h`). Old permanent tokens are rejected and removed on update.
-- **What a connection can do:** effectively anything the server user can do (root, if niCode runs as root), because Claude Code with permissions is remote code execution by design. Revoke a lost phone with `nicode token revoke <name>`; its open connection drops immediately.
+- **What a connection can do:** effectively anything the server user can do (root, if niCode runs as root; the app warns about that), because Claude Code with permissions is remote code execution by design. Revoke a lost phone with `nicode token revoke <name>`; its open connection and its preview cookies stop working immediately.
+- **Production servers** (`nicode role production`, or the switch in Server settings):
+  - Claude can only **analyze** there: read-only troubleshooting of code, logs and the database.
+  - Every command still asks the phone, with no "always allow".
+  - Leaving production mode, discarding local changes and running migrations each need a fresh fingerprint.
+- **Analyze chats** run Claude in a bubblewrap sandbox where the whole filesystem is read-only. The project and its `.git` can't change, so pulls on production stay clean. Writable: a scratch dir, `/tmp` and Analyze's own Claude state.
+  - The sandbox also closes the ways around it:
+    - other processes are hidden;
+    - sudo and other setuid binaries can't elevate;
+    - tmux, pm2, Docker, the user's systemd, ssh keys and git/gh credentials are out of reach;
+    - niCode's own data (other accounts' tokens, DB passwords) is hidden;
+    - `.env` secrets are redacted.
+  - The database is reached only through a SELECT-only user that niCode verifies.
+  - If the repository changes during an analysis anyway (for example a deploy you ran), the chat shows it.
 - **Mitigations:**
   - TLS only, with the daemon on localhost behind Caddy
   - per-IP backoff, plus fail2ban for SSH
@@ -71,6 +84,11 @@ App                         DigitalOcean                 Droplet
   - no shell interpolation of request parameters, and realpath guards on all file access
   - secrets redacted from logs
   - Claude tool use goes through the phone's approve/deny unless you choose Auto-edit or Bypass
+  - "Always allow" never covers chained/multi-line commands or command runners (`sudo`, `bash -c`, `xargs`…), and remembers `git status`, not all of `git`
+  - the unauthenticated login-challenge endpoint is rate-limited per IP
+- **Known limits:**
+  - TLS for `<ip>.sslip.io` depends on the sslip.io DNS service plus Let's Encrypt. Logins are signed but not bound to the TLS channel, so for production servers prefer `--domain` with your own A record.
+  - Claude's own processes can read its OAuth token. Prompt injection hidden in data it reads (logs, DB rows) could try to use it, so review commands before allowing them, especially on production.
 - **Subscription terms:** this is a personal tool on your own server using your own subscription. Don't share access or resell it. Usage limits (5-hour and weekly) apply to long agent runs.
 
 ## Risks

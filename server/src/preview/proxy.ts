@@ -5,8 +5,16 @@
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import net from 'node:net';
 import type { Duplex } from 'node:stream';
+import { app } from '../app.js';
+import { isExpired } from '../auth.js';
 import { log } from '../log.js';
 import { COOKIE, COOKIE_TTL_MS, cookieValid, issueCookie, previewPortOf, readCookie, redeemOpenToken, stripCookie } from './auth.js';
+
+/** Previews stay open only while the device that opened them is still paired (and unexpired). */
+function deviceAllowed(deviceId: string): boolean {
+  const d = app.config.devices.find((x) => x.id === deviceId);
+  return !!d && !isExpired(d);
+}
 
 /** Last time each previewed port was used (dev servers stop after a long idle). */
 export const lastPreviewUse = new Map<number, number>();
@@ -45,17 +53,18 @@ export function handlePreviewRequest(req: IncomingMessage, res: ServerResponse):
   const secure = req.headers['x-forwarded-proto'] === 'https';
 
   if (url.pathname === '/__nicode/auth') {
-    if (!redeemOpenToken(url.searchParams.get('t') ?? '', port)) {
+    const deviceId = redeemOpenToken(url.searchParams.get('t') ?? '', port);
+    if (!deviceId || !deviceAllowed(deviceId)) {
       deny(res, 401, 'Link expired', 'Open the preview again from the niCode app.');
       return true;
     }
-    const cookie = `${COOKIE}=${issueCookie(port)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${COOKIE_TTL_MS / 1000}${secure ? '; Secure' : ''}`;
+    const cookie = `${COOKIE}=${issueCookie(port, deviceId)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${COOKIE_TTL_MS / 1000}${secure ? '; Secure' : ''}`;
     const to = url.searchParams.get('to') ?? '/';
     res.writeHead(302, { location: to.startsWith('/') && !to.startsWith('//') ? to : '/', 'set-cookie': cookie, 'cache-control': 'no-store' });
     res.end();
     return true;
   }
-  if (!cookieValid(readCookie(req.headers.cookie, COOKIE), port)) {
+  if (!cookieValid(readCookie(req.headers.cookie, COOKIE), port, deviceAllowed)) {
     deny(res, 401, 'Preview locked', 'Open this preview from the niCode app to sign in.');
     return true;
   }
@@ -85,7 +94,7 @@ export function handlePreviewRequest(req: IncomingMessage, res: ServerResponse):
 export function handlePreviewUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): boolean {
   const port = previewPortOf(req.headers.host);
   if (port === null) return false;
-  if (!cookieValid(readCookie(req.headers.cookie, COOKIE), port) || blockedPorts.has(port)) {
+  if (!cookieValid(readCookie(req.headers.cookie, COOKIE), port, deviceAllowed) || blockedPorts.has(port)) {
     socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
     return true;
   }

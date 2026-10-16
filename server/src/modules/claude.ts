@@ -10,7 +10,7 @@ import { NoParams, register, RpcError } from '../rpc.js';
 import { projectOf, touchProject } from './projects.js';
 import { sendPush } from './push.js';
 
-const Mode = z.enum(['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions']);
+const Mode = z.enum(['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions', 'analyze']);
 /** Up to 4 images per message, ≤ 5 MB each (base64 is 4/3 larger). */
 const Images = z
   .array(z.object({ mediaType: z.enum(['image/jpeg', 'image/png', 'image/webp', 'image/gif']), data: z.string().min(16).max(7_000_000).regex(/^[A-Za-z0-9+/]+={0,2}$/) }))
@@ -18,6 +18,12 @@ const Images = z
   .optional();
 
 const sessions = new Map<string, ClaudeSession>();
+
+/** The server's role changed: on production every chat becomes a read-only Analyze chat. */
+export function onRoleChanged(): void {
+  if (!app.production) return;
+  for (const s of sessions.values()) s.makeAnalyze();
+}
 
 /** Called when the active Claude account changes. */
 export function restartClaudeProcesses(): void {
@@ -33,9 +39,9 @@ function get(id: string): ClaudeSession {
   return s;
 }
 
-/** Claude is working in this project right now. */
+/** Claude is changing this project right now (Analyze chats only read, so they don't count). */
 export function projectBusy(projectPath: string): boolean {
-  return [...sessions.values()].some((s) => s.busy && s.s.projectPath === projectPath);
+  return [...sessions.values()].some((s) => s.busy && !s.analyze && s.s.projectPath === projectPath);
 }
 
 function runningCount(): number {
@@ -72,7 +78,10 @@ function onResult(s: StoredSession, event: Record<string, unknown>): void {
 export async function initClaudeModule(): Promise<void> {
   store = new SessionStore(app.config.dataDir);
   broker = new PermissionBroker(app.config.dataDir, {
-    projectOf: (id) => sessions.get(id)?.s.projectPath,
+    policyOf: (id) => {
+      const s = sessions.get(id);
+      return s ? { projectPath: s.s.projectPath, analyze: s.analyze, allowRemember: !app.production } : undefined;
+    },
     onWaiting: (id, waiting) => sessions.get(id)?.setWaiting(waiting),
     notify: (req) => {
       const d = describeTool(req);
@@ -81,6 +90,7 @@ export async function initClaudeModule(): Promise<void> {
   });
   await broker.start();
   for (const s of await store.load()) sessions.set(s.sessionId, new ClaudeSession(s, { store, broker, onResult }));
+  onRoleChanged();
 }
 
 export function shutdownClaude(): void {
@@ -95,8 +105,10 @@ export function registerClaudeModule(): void {
     async ({ projectPath, prompt, model, permissionMode, images }) => {
       const project = await projectOf(projectPath);
       ensureCapacity();
-      const mode = permissionMode ?? 'default';
-      app.cliPermissionMode(mode); // validates against the installed CLI
+      const mode = permissionMode ?? (app.production ? 'analyze' : 'default');
+      app.cliPermissionMode(mode); // validates against the installed CLI (and the server's role)
+      const blocked = mode === 'analyze' ? app.analyzeBlocked() : null;
+      if (blocked) throw new RpcError('forbidden', blocked);
       const now = new Date().toISOString();
       const s: StoredSession = {
         sessionId: randomUUID(),
@@ -142,6 +154,10 @@ export function registerClaudeModule(): void {
   register('claude.setMode', z.object({ sessionId: z.string(), permissionMode: Mode.optional(), model: z.string().max(100).optional() }), ({ sessionId, permissionMode, model }) => {
     const s = get(sessionId);
     if (permissionMode) app.cliPermissionMode(permissionMode);
+    // Analyze chats keep their own Claude state (sandbox); switching in or out needs a new chat.
+    if (permissionMode && (permissionMode === 'analyze') !== s.analyze) {
+      throw new RpcError('bad_request', s.analyze ? 'This is an Analyze (read-only) chat. Start a new chat to make changes.' : 'Start a new chat for Analyze (read-only) mode.');
+    }
     s.updateSettings({ ...(permissionMode ? { permissionMode } : {}), ...(model !== undefined ? { model } : {}) });
     return publicSummary(s.s);
   });

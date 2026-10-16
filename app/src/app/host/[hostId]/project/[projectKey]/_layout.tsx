@@ -1,8 +1,9 @@
 import { Stack, Tabs, router, useLocalSearchParams } from 'expo-router';
 import { View } from 'react-native';
 import { connStatus } from '@/components/ConnectionBar';
-import { Icon, IconButton, StatusDot, T } from '@/components/ui';
+import { Badge, Icon, IconButton, StatusDot, T } from '@/components/ui';
 import { useConnection } from '@/lib/connections';
+import { getHost } from '@/state/hosts';
 import { basename, keyPath } from '@/lib/util';
 import { ProjectContext } from '@/lib/project';
 import { usePermissionSync } from '@/state/chat';
@@ -15,9 +16,10 @@ export default function ProjectLayout() {
   const c = useColors();
   const { hostId, projectKey } = useLocalSearchParams<{ hostId: string; projectKey: string }>();
   const projectPath = keyPath(projectKey);
-  const { client, state } = useConnection(hostId);
+  const { client, state, info } = useConnection(hostId);
   const pending = usePermissionSync(client, hostId);
   const s = connStatus(state);
+  const production = (info?.role ?? getHost(hostId)?.role) === 'production';
 
   return (
     <ProjectContext.Provider value={{ hostId, projectPath }}>
@@ -29,6 +31,7 @@ export default function ProjectLayout() {
                 {basename(projectPath)}
               </T>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                {production ? <Badge text="PRODUCTION" tone="danger" /> : null}
                 <StatusDot tone={s.dot} />
                 <T size="xs" tone="dim">
                   {s.label}
